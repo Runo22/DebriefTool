@@ -7,31 +7,44 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ── Options ────────────────────────────────────────────────────────────────────
-option(DEBRIEF_TRACY   "Enable Tracy profiler instrumentation" OFF)
-option(DEBRIEF_TESTS   "Build unit tests"                      OFF)
+option(DEBRIEF_TRACY  "Enable Tracy profiler instrumentation" OFF)
+option(DEBRIEF_TESTS  "Build unit tests"                      OFF)
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 if(WIN32)
-    add_compile_definitions(DEBRIEF_WINDOWS NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+    add_compile_definitions(DEBRIEF_WINDOWS)
 elseif(APPLE)
     add_compile_definitions(DEBRIEF_MACOS)
 endif()
 
-# ── Compiler flags ─────────────────────────────────────────────────────────────
+# ── Global flags — applied to ALL targets including submodules ─────────────────
+#
+#  IMPORTANT: keep this section MINIMAL and submodule-safe.
+#  Strict flags (/WX, -Werror, /W4, -Wall) go on the `debrief` target below,
+#  NOT here — otherwise Assimp/Raylib/Flecs warnings become build errors.
+#
 if(MSVC)
     add_compile_options(
-        /W4 /WX /MP /permissive-
-        /arch:AVX2
-        /wd4201   # anonymous struct/union
-        /wd4996   # deprecated POSIX names
+        /MP              # parallel compilation
+        /wd4996          # 'memcpy'/'strncpy'/etc "may be unsafe" — suppress globally
+        /wd4267          # size_t->int narrowing in C library headers
+        /wd4244          # double->float narrowing in C library headers
+        /wd4305          # double->float truncation in third-party initializers
+        /wd4100          # unreferenced formal parameter in third-party code
     )
-    # Enable C++23 std::expected and std::print
     add_compile_options(/Zc:__cplusplus /std:c++latest)
-else()
-    add_compile_options(
-        -Wall -Wextra -Wno-unused-parameter
-        -march=native -ffast-math
+    add_compile_definitions(
+        _CRT_SECURE_NO_WARNINGS   # suppress the entire memcpy/strncpy "unsafe" family
+        _CRT_NONSTDC_NO_WARNINGS  # suppress _strdup/_stricmp POSIX name deprecation
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
     )
+else()
+    # Suppress deprecated-declaration noise from third-party libs on macOS Clang 15+
+    # (strncpy, bzero, etc. are deprecated in newer Apple SDKs)
+    add_compile_options(-Wno-deprecated-declarations)
+    # Suppress Clang 16+ unsafe-buffer-usage warnings in third-party C code
+    add_compile_options(-Wno-unsafe-buffer-usage)
 endif()
 
 # ── Third-party: Raylib ────────────────────────────────────────────────────────
@@ -43,7 +56,8 @@ add_subdirectory(third_party/raylib)
 set(FLECS_STATIC ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/flecs)
 
-# ── Third-party: Assimp (minimal importers for speed) ─────────────────────────
+# ── Third-party: Assimp (only the importers we need — much faster compile) ────
+set(ASSIMP_WARNINGS_AS_ERRORS         OFF CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_FBX_IMPORTER   ON  CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_OBJ_IMPORTER   ON  CACHE BOOL "" FORCE)
@@ -54,7 +68,7 @@ set(ASSIMP_NO_EXPORT            ON  CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS           OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/assimp)
 
-# ── Third-party: ImGui (docking branch) ───────────────────────────────────────
+# ── Third-party: ImGui + ImPlot ───────────────────────────────────────────────
 set(IMGUI_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
 set(IMPLOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/implot)
 
@@ -73,7 +87,7 @@ target_include_directories(imgui PUBLIC
     ${IMGUI_DIR}/backends
     ${IMPLOT_DIR}
 )
-target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_LOADER_CUSTOM)
+# No custom GL loader — let ImGui use its bundled GLAD loader
 
 # ── Third-party: rlImGui ──────────────────────────────────────────────────────
 set(RLIMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/rlImGui)
@@ -88,10 +102,7 @@ if(DEBRIEF_TRACY)
 endif()
 
 # ── Main executable ────────────────────────────────────────────────────────────
-file(GLOB_RECURSE DEBRIEF_SRC
-    "src/*.cpp"
-    "src/*.hpp"
-)
+file(GLOB_RECURSE DEBRIEF_SRC "src/*.cpp" "src/*.hpp")
 
 add_executable(debrief ${DEBRIEF_SRC})
 
@@ -109,16 +120,32 @@ target_link_libraries(debrief PRIVATE
     rlimgui
 )
 
-if(DEBRIEF_TRACY)
-    target_link_libraries(debrief PRIVATE TracyClient)
+# ── Strict flags for OUR code only — NOT propagated to submodules ──────────────
+if(MSVC)
+    target_compile_options(debrief PRIVATE
+        /W4           # high warning level
+        /WX           # warnings-as-errors for our own code only
+        /permissive-  # strict standards conformance
+        /arch:AVX2    # AVX2 intrinsics on x64
+        /wd4201       # anonymous struct/union (used in raymath.h headers we include)
+    )
+else()
+    target_compile_options(debrief PRIVATE
+        -Wall
+        -Wextra
+        -Wno-unused-parameter
+        -ffast-math
+        # -march=native is commented out for portability across machines;
+        # uncomment locally for maximum performance on your build machine.
+        # -march=native
+    )
 endif()
 
-# Windows: Winsock + multimedia timer
+# ── Platform link libs ─────────────────────────────────────────────────────────
 if(WIN32)
     target_link_libraries(debrief PRIVATE ws2_32 winmm)
 endif()
 
-# macOS: system frameworks
 if(APPLE)
     target_link_libraries(debrief PRIVATE
         "-framework Cocoa"
@@ -128,15 +155,17 @@ if(APPLE)
     )
 endif()
 
+if(DEBRIEF_TRACY)
+    target_link_libraries(debrief PRIVATE TracyClient)
+endif()
+
 # ── Post-build: copy assets ────────────────────────────────────────────────────
 add_custom_command(TARGET debrief POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_SOURCE_DIR}/assets
-        $<TARGET_FILE_DIR:debrief>/assets
+        ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:debrief>/assets
     COMMENT "Copying assets..."
 )
 
-# ── Tests ─────────────────────────────────────────────────────────────────────
 if(DEBRIEF_TESTS)
     enable_testing()
     add_subdirectory(tests)

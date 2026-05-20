@@ -212,4 +212,52 @@ bool Recorder::export_slice(const TelemetryStore& store,
     return true;
 }
 
+// ── .dbr loader ──────────────────────────────────────────────────────────────
+bool Recorder::load_into(const std::filesystem::path& path,
+                         TelemetryStore& store) noexcept
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+
+    FileHeader hdr{};
+    f.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
+    if (!f || hdr.magic != kFileMagic) return false;
+
+    SceneOrigin origin{};
+    f.read(reinterpret_cast<char*>(&origin), sizeof(origin));
+
+    // Read frames sequentially up to index_offset (or EOF if index not written).
+    uint64_t data_end = hdr.index_offset ? hdr.index_offset : UINT64_MAX;
+
+    while (f && static_cast<uint64_t>(f.tellg()) < data_end) {
+        FrameHeader fh{};
+        f.read(reinterpret_cast<char*>(&fh), sizeof(fh));
+        if (!f) break;
+
+        std::vector<net::EntityState> entities;
+        entities.reserve(fh.entity_count);
+
+        for (uint16_t i = 0; i < fh.entity_count; ++i) {
+            EntitySnapshot snap{};
+            f.read(reinterpret_cast<char*>(&snap), sizeof(snap));
+            if (!f) break;
+
+            net::EntityState s{};
+            s.entity_id   = snap.entity_id;
+            s.entity_type = snap.type;
+            s.health      = snap.health;
+            s.timestamp_ns= fh.timestamp_ns;
+            std::memcpy(s.position,    snap.position,    sizeof(s.position));
+            std::memcpy(s.orientation, snap.orientation, sizeof(s.orientation));
+            std::memcpy(s.velocity,    snap.velocity,    sizeof(s.velocity));
+            std::memcpy(s.callsign,    snap.callsign,    sizeof(s.callsign));
+            entities.push_back(s);
+        }
+
+        store.ingest(fh.timestamp_ns, entities);
+    }
+
+    return true;
+}
+
 } // namespace debrief::persist

@@ -170,7 +170,7 @@ void DebriefUI::draw_timeline(PlaybackController& pb,
     {
         ImPlot::SetupAxes("Time", "Alt", ImPlotAxisFlags_NoLabel, 0);
         if (plot_count_ > 0)
-            ImPlot::PlotLine("Alt", plot_time_, plot_alt_, plot_count_, 0, plot_idx_);
+            ImPlot::PlotLine("Alt", plot_time_, plot_alt_, plot_count_);
         ImPlot::EndPlot();
     }
 
@@ -222,10 +222,10 @@ void DebriefUI::draw_inspector(const flecs::world& world)
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
     auto e = state_.selected_entity;
-    const auto* meta = e.get<EntityMeta>();
-    const auto* pos  = e.get<Position>();
-    const auto* rot  = e.get<Rotation>();
-    const auto* vel  = e.get<Velocity>();
+    const auto *meta = &e.get<EntityMeta>();
+    const auto *pos = &e.get<Position>();
+    const auto *rot = &e.get<Rotation>();
+    const auto *vel = &e.get<Velocity>();
 
     if (meta) {
         ImGui::Text("Type:     %s", entity_type_name(meta->type));
@@ -240,14 +240,17 @@ void DebriefUI::draw_inspector(const flecs::world& world)
         if (pos) ImGui::Text("Altitude: %.0f m", pos->v.y);
     }
 
-    // Update ImPlot sample buffer
-    if (pos && vel) {
+    // Update ImPlot sample buffer — reset on entity switch, cap at kPlotWindow
+    if (e != last_plot_entity_) {
+        plot_count_ = 0;
+        last_plot_entity_ = e;
+    }
+    if (pos && vel && plot_count_ < kPlotWindow) {
         float spd = sqrtf(vel->v.x*vel->v.x + vel->v.y*vel->v.y + vel->v.z*vel->v.z);
-        plot_time_[plot_idx_ % kPlotWindow] = ImGui::GetTime();
-        plot_alt_ [plot_idx_ % kPlotWindow] = pos->v.y;
-        plot_speed_[plot_idx_ % kPlotWindow] = spd;
-        ++plot_idx_;
-        if (plot_count_ < kPlotWindow) ++plot_count_;
+        plot_time_ [plot_count_] = static_cast<float>(ImGui::GetTime());
+        plot_alt_  [plot_count_] = pos->v.y;
+        plot_speed_[plot_count_] = spd;
+        ++plot_count_;
     }
 
     ImGui::End();
