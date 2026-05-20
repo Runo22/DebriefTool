@@ -22,7 +22,7 @@ import time
 
 MAGIC = b'DBF1'
 HDR_FMT  = '<4sBBH'            # 8 bytes
-ENT_FMT  = '<IHB5sdddfffffQ'   # 56 bytes
+ENT_FMT  = '<IHB5sddfffffQ'    # 56 bytes
 
 TYPE_JET     = 1
 TYPE_MISSILE = 2
