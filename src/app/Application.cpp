@@ -251,7 +251,7 @@ flecs::entity Application::get_or_create_entity(const net::EntityState& state) {
     rm.model_ptr = const_cast<Model*>(&entry->model); // AssetManager owns the model
     rm.tint      = entry->tint;
     rm.scale     = entry->scale;
-    rm.base_rot  = entry->base_rotation;
+    rm.base_rot  = entry->base_rot;
 
     auto e = world_.entity(ename)
         .set<ecs::EntityMeta>({state.source_id, state.entity_id,
@@ -264,8 +264,8 @@ flecs::entity Application::get_or_create_entity(const net::EntityState& state) {
         .set<ecs::Trail>({})
         .set<ecs::RenderModel>(rm);
 
-    auto* meta = e.get_mut<ecs::EntityMeta>();
-    std::memcpy(meta->callsign, state.callsign, 8);
+    auto& meta = e.get_mut<ecs::EntityMeta>();
+    std::memcpy(meta.callsign, state.callsign, 8);
 
     entity_map_.emplace(key, e);
     TraceLog(LOG_INFO, "Spawned entity '%s' type=%d", ename, state.entity_type);
@@ -275,9 +275,9 @@ flecs::entity Application::get_or_create_entity(const net::EntityState& state) {
 void Application::apply_state_to_ecs(net::EntityState& state) {
     auto e = get_or_create_entity(state);
 
-    auto* meta = e.get_mut<ecs::EntityMeta>();
-    if (state.destroyed) { meta->active = false; return; }
-    meta->active = true;
+    auto& meta = e.get_mut<ecs::EntityMeta>();
+    if (state.destroyed) { meta.active = false; return; }
+    meta.active = true;
 
     EntityStateHistory::Keyframe kf{};
     kf.timestamp_ns    = state.timestamp_ns;
@@ -293,7 +293,7 @@ void Application::apply_state_to_ecs(net::EntityState& state) {
     kf.velocity[2]     = state.velocity[2];
     kf.health          = state.health;
 
-    e.get_mut<ecs::HistoryComp>()->hist.push(kf);
+    e.get_mut<ecs::HistoryComp>().hist.push(kf);
 }
 
 // ── ECS tick ──────────────────────────────────────────────────────────────────

@@ -86,13 +86,14 @@ private:
     UIState    state_{};
     UICallbacks cbs_{};
 
-    // ImPlot altitude/speed telemetry data for the selected entity
+    // ImPlot altitude/speed telemetry data for the selected entity.
+    // Linear buffer reset whenever the selected entity changes.
     static constexpr int kPlotWindow = 512;
     float plot_time_[kPlotWindow]{};
     float plot_alt_[kPlotWindow]{};
     float plot_speed_[kPlotWindow]{};
-    int   plot_idx_  = 0;
     int   plot_count_= 0;
+    flecs::entity last_plot_entity_{};
 };
 
 } // namespace debrief

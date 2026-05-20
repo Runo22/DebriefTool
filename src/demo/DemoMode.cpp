@@ -1,6 +1,7 @@
 #include "DemoMode.hpp"
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 #ifndef M_PI
@@ -48,8 +49,8 @@ static net::EntityState make_state(
     s.velocity[1]  =  speed_mps * sinf(theta_rad);
     s.velocity[2]  = -speed_mps * cosf(psi_rad) * cosf(theta_rad);
 
-    std::strncpy(s.callsign, callsign, 7);
-    s.callsign[7] = '\0';
+    // Use snprintf instead of strncpy — strncpy is deprecated on macOS Clang 15+
+    snprintf(s.callsign, sizeof(s.callsign), "%s", callsign);
     return s;
 }
 
