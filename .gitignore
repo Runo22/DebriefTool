@@ -1,0 +1,51 @@
+# Build
+build/
+out/
+.cache/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CPackConfig.cmake
+CPackSourceConfig.cmake
+compile_commands.json
+*.cmake
+!CMakeLists.txt
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.sln.docview
+*.vcxproj.user
+*.ncb
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+imgui.ini
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Build artifacts
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.dll
+*.so
+*.dylib
+*.o
+*.obj
+
+# Session files
+*.dbr
+
+# Python cache
+__pycache__/
+*.pyc
