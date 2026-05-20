@@ -1,0 +1,35 @@
+[submodule "third_party/raylib"]
+	path = third_party/raylib
+	url = https://github.com/raysan5/raylib.git
+	branch = master
+	shallow = true
+
+[submodule "third_party/flecs"]
+	path = third_party/flecs
+	url = https://github.com/SanderMertens/flecs.git
+	branch = master
+	shallow = true
+
+[submodule "third_party/imgui"]
+	path = third_party/imgui
+	url = https://github.com/ocornut/imgui.git
+	branch = docking
+	shallow = true
+
+[submodule "third_party/rlImGui"]
+	path = third_party/rlImGui
+	url = https://github.com/raylib-extras/rlImGui.git
+	branch = main
+	shallow = true
+
+[submodule "third_party/assimp"]
+	path = third_party/assimp
+	url = https://github.com/assimp/assimp.git
+	branch = master
+	shallow = true
+
+[submodule "third_party/implot"]
+	path = third_party/implot
+	url = https://github.com/epezent/implot.git
+	branch = master
+	shallow = true
