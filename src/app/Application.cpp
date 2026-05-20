@@ -4,9 +4,11 @@
 #include <imgui.h>
 #include <implot.h>
 #include <raymath.h>
+#include <rlgl.h>
 #include <cmath>
 #include <cstring>
 #include <ctime>
+#include <algorithm>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -103,11 +105,12 @@ void Application::init_assets() {
 }
 
 void Application::init_camera() {
-    camera_.position   = { 0.0f, 8000.0f, 14000.0f };
+    camera_.position   = { 0.0f, 1000.0f, 2000.0f };
     camera_.target     = { 0.0f, 0.0f, 0.0f };
     camera_.up         = { 0.0f, 1.0f, 0.0f };
     camera_.fovy       = 45.0f;
     camera_.projection = CAMERA_PERSPECTIVE;
+    camera_free_target_ = { 0.0f, 0.0f, 0.0f };
 }
 
 void Application::init_ui_callbacks() {
@@ -162,6 +165,7 @@ void Application::tick(float dt) {
     if (cfg_.demo_mode) process_demo(dt);
     else                process_inbound_queue();
     update_ecs(dt);
+    update_camera_state(dt);
     render();
 }
 
@@ -255,6 +259,19 @@ flecs::entity Application::get_or_create_entity(const net::EntityState& state) {
     rm.scale     = entry->scale;
     rm.base_rot  = entry->base_rot;
 
+    // Per-type trail color for visual identification
+    ecs::Trail trail_init{};
+    trail_init.width = 10.0f;
+    switch (state.entity_type) {
+        case net::TYPE_JET:     trail_init.color = { 80, 160, 255, 200 }; break; // blue
+        case net::TYPE_MISSILE: trail_init.color = { 255, 80,  80, 220 }; break; // red-orange
+        case net::TYPE_AAA:     trail_init.color = { 80, 180,  80, 180 }; break; // green
+        case net::TYPE_GROUND:  trail_init.color = {220, 140,  40, 180 }; break; // amber
+        case net::TYPE_HELO:    trail_init.color = { 80, 220, 100, 200 }; break; // lime
+        case net::TYPE_SHIP:    trail_init.color = {160, 160, 220, 180 }; break; // lavender
+        default:                trail_init.color = {  0, 200, 255, 180 }; break; // cyan
+    }
+
     auto e = world_.entity(ename)
         .set<ecs::EntityMeta>({state.source_id, state.entity_id,
                                state.entity_type,
@@ -263,7 +280,7 @@ flecs::entity Application::get_or_create_entity(const net::EntityState& state) {
         .set<ecs::Rotation>({})
         .set<ecs::Velocity>({})
         .set<ecs::HistoryComp>({})
-        .set<ecs::Trail>({})
+        .set<ecs::Trail>(trail_init)
         .set<ecs::RenderModel>(rm);
 
     auto& meta = e.get_mut<ecs::EntityMeta>();
@@ -451,7 +468,13 @@ void Application::render() {
 
 void Application::render_3d() {
     BeginMode3D(camera_);
-    DrawGrid(200, 500.0f);
+
+    // 1. Draw procedural undulating tactical terrain background or grid
+    if (ui_.state().terrain_solid || ui_.state().terrain_wireframe) {
+        draw_terrain();
+    } else {
+        DrawGrid(200, 500.0f);
+    }
 
     world_.query<const ecs::EntityMeta,
                   const ecs::Position,
@@ -478,19 +501,35 @@ void Application::render_3d() {
             float angle_rad = 0.0f;
             QuaternionToAxisAngle(q, &axis, &angle_rad);
 
-            if (rm.model_ptr)
+            // Apply dynamic 3D scale slider so entities are highly visible in the wide visualizer
+            float final_scale = rm.scale * ui_.state().entity_3d_scale;
+            if (rm.model_ptr) {
                 DrawModelEx(*rm.model_ptr, pos.v,
                             axis, angle_rad * RAD2DEG,
-                            {rm.scale, rm.scale, rm.scale}, rm.tint);
+                            {final_scale, final_scale, final_scale}, rm.tint);
+            } else {
+                // If no FBX model exists, render a bright cyan 3D pyramid marker
+                DrawCylinder(pos.v, 0.0f, 15.0f * ui_.state().entity_3d_scale, 30.0f * ui_.state().entity_3d_scale, 4, {0, 220, 255, 255});
+                DrawCylinderWires(pos.v, 0.0f, 15.0f * ui_.state().entity_3d_scale, 30.0f * ui_.state().entity_3d_scale, 4, {200, 240, 255, 200});
+            }
 
-            // Selection ring
+            // Selection tracker - Draw rotating cyber-command octahedron above and concentric target rings below
             if (ui_.state().selected_entity == e) {
-                DrawSphereWires(pos.v, 60.0f, 6, 6, YELLOW);
+                DrawSphereWires(pos.v, 60.0f * (ui_.state().entity_3d_scale * 0.15f), 6, 6, YELLOW);
+                
+                float time_sec = GetTime();
+                float bob = sinf(time_sec * 4.0f) * 12.0f;
+                float scale = ui_.state().entity_3d_scale;
+                
+                // Bobbing 3D octahedron tracking diamond
+                Vector3 diamond_pos = {pos.v.x, pos.v.y + (100.0f * (scale * 0.12f)) + bob, pos.v.z};
+                DrawCylinderWires(diamond_pos, 0.0f, 25.0f * (scale * 0.12f), 35.0f * (scale * 0.12f), 4, YELLOW);
+                DrawCylinderWires({diamond_pos.x, diamond_pos.y - 35.0f * (scale * 0.12f), diamond_pos.z}, 25.0f * (scale * 0.12f), 0.0f, 35.0f * (scale * 0.12f), 4, YELLOW);
                 
                 // Tactical range rings directly on the ground plane under the selected entity
-                DrawCircle3D({pos.v.x, 0.1f, pos.v.z}, 300.0f, {1, 0, 0}, 90.0f, {255, 220, 0, 150});
-                DrawCircle3D({pos.v.x, 0.1f, pos.v.z}, 600.0f, {1, 0, 0}, 90.0f, {255, 220, 0, 75});
-                DrawCircle3D({pos.v.x, 0.1f, pos.v.z}, 900.0f, {1, 0, 0}, 90.0f, {255, 220, 0, 30});
+                DrawCircle3D({pos.v.x, 0.2f, pos.v.z}, 400.0f, {1, 0, 0}, 90.0f, {255, 220, 0, 150});
+                DrawCircle3D({pos.v.x, 0.2f, pos.v.z}, 800.0f, {1, 0, 0}, 90.0f, {255, 220, 0, 75});
+                DrawCircle3D({pos.v.x, 0.2f, pos.v.z}, 1200.0f, {1, 0, 0}, 90.0f, {255, 220, 0, 30});
             }
 
             // Altitude projection lines for airborne units
@@ -502,7 +541,7 @@ void Application::render_3d() {
                     DrawLine3D({pos.v.x, h, pos.v.z}, {pos.v.x, h_end, pos.v.z}, {0, 190, 255, 140});
                 }
                 // Draw ground projection circle
-                DrawCircle3D({pos.v.x, 0.1f, pos.v.z}, 80.0f, {1, 0, 0}, 90.0f, {0, 190, 255, 120});
+                DrawCircle3D({pos.v.x, 0.2f, pos.v.z}, 80.0f * (ui_.state().entity_3d_scale * 0.15f), {1, 0, 0}, 90.0f, {0, 190, 255, 120});
             }
 
             // Velocity vector (5-second look-ahead)
@@ -511,9 +550,9 @@ void Application::render_3d() {
                 DrawLine3D(pos.v, tip, GREEN);
             }
 
-            // Trail
+            // Trail ribbon (applying width override slider)
             if (ui_.state().show_trails)
-                trails_.draw(trail, camera_);
+                trails_.draw(trail, camera_, ui_.state().trail_width_override);
         });
 
     EndMode3D();
@@ -552,20 +591,9 @@ void Application::render_ui() {
 void Application::handle_input(float /*dt*/) {
     if (IsKeyPressed(KEY_ESCAPE)) running_ = false;
 
-    if (!ImGui::GetIO().WantCaptureMouse)
-        UpdateCamera(&camera_, CAMERA_ORBITAL);
-
     if (IsKeyPressed(KEY_SPACE)) {
         if (playback_.state() == PlaybackState::Playing) playback_.pause();
         else                                              playback_.play();
-    }
-
-    if (IsKeyPressed(KEY_F) && ui_.state().selected_entity.is_valid()) {
-        auto se = ui_.state().selected_entity;
-        if (world_.is_alive(se)) {
-            if (se.has<ecs::CameraTarget>()) se.remove<ecs::CameraTarget>();
-            else                              se.add<ecs::CameraTarget>();
-        }
     }
 
     if (IsKeyPressed(KEY_R)) {
@@ -578,6 +606,180 @@ void Application::handle_input(float /*dt*/) {
     if (IsKeyPressed(KEY_TWO))   playback_.set_speed(1.0f);
     if (IsKeyPressed(KEY_THREE)) playback_.set_speed(4.0f);
     if (IsKeyPressed(KEY_FOUR))  playback_.set_speed(-1.0f);
+}
+
+void Application::draw_terrain() {
+    auto& state = ui_.state();
+    if (!state.terrain_solid && !state.terrain_wireframe) return;
+
+    constexpr int GRID_SIZE = 60;
+    constexpr float TILE_SIZE = 1000.0f;
+    constexpr float START_POS = -(GRID_SIZE * TILE_SIZE) / 2.0f;
+
+    auto get_height = [&](int ix, int iz) -> float {
+        float x = START_POS + ix * TILE_SIZE;
+        float z = START_POS + iz * TILE_SIZE;
+
+        float h = 500.0f * sinf(x * 0.0001f) * cosf(z * 0.0001f)
+                + 250.0f * sinf(x * 0.0003f + 1.0f) * sinf(z * 0.0002f)
+                + 60.0f  * cosf(x * 0.0008f) * cosf(z * 0.0007f);
+
+        float dist_from_center = sqrtf(x*x + z*z);
+        float flat_factor = (dist_from_center - 3000.0f) / 12000.0f;
+        if (flat_factor < 0.0f) flat_factor = 0.0f;
+        if (flat_factor > 1.0f) flat_factor = 1.0f;
+
+        return h * flat_factor * state.terrain_height_scale - 10.0f * (1.0f - flat_factor);
+    };
+
+    if (state.terrain_solid) {
+        rlBegin(RL_QUADS);
+        for (int iz = 0; iz < GRID_SIZE; ++iz) {
+            for (int ix = 0; ix < GRID_SIZE; ++ix) {
+                float x0 = START_POS + ix * TILE_SIZE;
+                float z0 = START_POS + iz * TILE_SIZE;
+                float x1 = x0 + TILE_SIZE;
+                float z1 = z0 + TILE_SIZE;
+
+                float h00 = get_height(ix, iz);
+                float h10 = get_height(ix + 1, iz);
+                float h11 = get_height(ix + 1, iz + 1);
+                float h01 = get_height(ix, iz + 1);
+
+                rlColor4ub(10, 18, 28, 255);
+                rlVertex3f(x0, h00, z0);
+                rlVertex3f(x0, h01, z1);
+                rlVertex3f(x1, h11, z1);
+                rlVertex3f(x1, h10, z0);
+            }
+        }
+        rlEnd();
+    }
+
+    if (state.terrain_wireframe) {
+        rlBegin(RL_LINES);
+        for (int iz = 0; iz < GRID_SIZE; ++iz) {
+            for (int ix = 0; ix < GRID_SIZE; ++ix) {
+                float x0 = START_POS + ix * TILE_SIZE;
+                float z0 = START_POS + iz * TILE_SIZE;
+                float x1 = x0 + TILE_SIZE;
+                float z1 = z0 + TILE_SIZE;
+
+                float h00 = get_height(ix, iz);
+                float h10 = get_height(ix + 1, iz);
+                float h11 = get_height(ix + 1, iz + 1);
+                float h01 = get_height(ix, iz + 1);
+
+                rlColor4ub(0, 120, 200, 70);
+
+                rlVertex3f(x0, h00, z0);
+                rlVertex3f(x0, h01, z1);
+
+                rlVertex3f(x0, h00, z0);
+                rlVertex3f(x1, h10, z0);
+
+                rlVertex3f(x0, h01, z1);
+                rlVertex3f(x1, h11, z1);
+
+                rlVertex3f(x1, h10, z0);
+                rlVertex3f(x1, h11, z1);
+            }
+        }
+        rlEnd();
+    }
+}
+
+void Application::update_camera_state(float dt) {
+    auto& state = ui_.state();
+
+    if (!ImGui::GetIO().WantCaptureMouse) {
+        float wheel = GetMouseWheelMove();
+        if (wheel != 0.0f) {
+            state.camera_distance -= wheel * (state.camera_distance * 0.15f);
+            if (state.camera_distance < 20.0f) state.camera_distance = 20.0f;
+            if (state.camera_distance > 50000.0f) state.camera_distance = 50000.0f;
+        }
+
+        if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+            Vector2 delta = GetMouseDelta();
+            state.camera_yaw   += delta.x * 0.25f;
+            state.camera_pitch -= delta.y * 0.25f;
+            if (state.camera_pitch > 85.0f)  state.camera_pitch = 85.0f;
+            if (state.camera_pitch < -85.0f) state.camera_pitch = -85.0f;
+        }
+    }
+
+    flecs::entity sel = state.selected_entity;
+    if (IsKeyPressed(KEY_F) && sel.is_valid() && world_.is_alive(sel)) {
+        if (state.camera_mode == 1) {
+            state.camera_mode = 0;
+            if (sel.has<ecs::Position>())
+                camera_free_target_ = sel.get<ecs::Position>().v;
+        } else {
+            state.camera_mode = 1;
+        }
+    }
+
+    if (state.camera_mode == 1 && sel.is_valid() && world_.is_alive(sel)) {
+        if (sel.has<ecs::Position>()) {
+            Vector3 ent_pos = sel.get<ecs::Position>().v;
+            camera_.target = ent_pos;
+
+            float pitch_rad = state.camera_pitch * DEG2RAD;
+            float yaw_rad = state.camera_yaw * DEG2RAD;
+            Vector3 offset = {
+                state.camera_distance * cosf(pitch_rad) * sinf(yaw_rad),
+                state.camera_distance * sinf(pitch_rad),
+                state.camera_distance * cosf(pitch_rad) * cosf(yaw_rad)
+            };
+            camera_.position = Vector3Add(camera_.target, offset);
+            camera_.up = { 0.0f, 1.0f, 0.0f };
+        }
+    }
+    else if (state.camera_mode == 2 && sel.is_valid() && world_.is_alive(sel)) {
+        if (sel.has<ecs::Position>() && sel.has<ecs::Rotation>()) {
+            Vector3 ent_pos = sel.get<ecs::Position>().v;
+            Quaternion ent_rot = sel.get<ecs::Rotation>().q;
+
+            Vector3 forward = Vector3RotateByQuaternion({0, 0, -1}, ent_rot);
+            Vector3 up      = Vector3RotateByQuaternion({0, 1, 0}, ent_rot);
+
+            float dist = state.camera_distance * 0.12f;
+            if (dist < 30.0f) dist = 30.0f;
+            float height = dist * 0.3f;
+
+            Vector3 chase_offset = Vector3Add(Vector3Scale(forward, -dist), Vector3Scale(up, height));
+            Vector3 target_pos = Vector3Add(ent_pos, chase_offset);
+
+            camera_.position = Vector3Lerp(camera_.position, target_pos, 8.0f * dt);
+            camera_.target   = Vector3Add(ent_pos, Vector3Scale(forward, 100.0f));
+            camera_.up       = up;
+        }
+    }
+    else {
+        float yaw_rad = state.camera_yaw * DEG2RAD;
+        Vector3 forward = { sinf(yaw_rad), 0.0f, cosf(yaw_rad) };
+        Vector3 right   = { cosf(yaw_rad), 0.0f, -sinf(yaw_rad) };
+
+        float pan_speed = state.camera_distance * 0.5f * dt;
+        if (IsKeyDown(KEY_LEFT_SHIFT)) pan_speed *= 3.0f;
+
+        if (IsKeyDown(KEY_W)) camera_free_target_ = Vector3Subtract(camera_free_target_, Vector3Scale(forward, pan_speed));
+        if (IsKeyDown(KEY_S)) camera_free_target_ = Vector3Add(camera_free_target_, Vector3Scale(forward, pan_speed));
+        if (IsKeyDown(KEY_A)) camera_free_target_ = Vector3Subtract(camera_free_target_, Vector3Scale(right, pan_speed));
+        if (IsKeyDown(KEY_D)) camera_free_target_ = Vector3Add(camera_free_target_, Vector3Scale(right, pan_speed));
+
+        camera_.target = camera_free_target_;
+
+        float pitch_rad = state.camera_pitch * DEG2RAD;
+        Vector3 offset = {
+            state.camera_distance * cosf(pitch_rad) * sinf(yaw_rad),
+            state.camera_distance * sinf(pitch_rad),
+            state.camera_distance * cosf(pitch_rad) * cosf(yaw_rad)
+        };
+        camera_.position = Vector3Add(camera_.target, offset);
+        camera_.up = { 0.0f, 1.0f, 0.0f };
+    }
 }
 
 } // namespace debrief

@@ -46,8 +46,10 @@ private:
     void update_ecs(float dt);
     void render();
     void render_3d();
+    void draw_terrain();
     void render_ui();
     void handle_input(float dt);
+    void update_camera_state(float dt);
 
     // Called for both live and demo paths — converts EntityState to ECS.
     void apply_state_to_ecs(net::EntityState& state);
@@ -86,6 +88,7 @@ private:
     DebriefUI          ui_;
 
     demo::DemoMode     demo_;
+    Vector3            camera_free_target_{ 0.0f, 0.0f, 0.0f };
 
     // Scene origin (WGS84) — set from first entity's position.
     double   origin_lat_ = 0.0, origin_lon_ = 0.0;

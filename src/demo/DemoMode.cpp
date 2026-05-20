@@ -73,61 +73,69 @@ std::vector<net::EntityState> DemoMode::tick(float dt_sec) {
     const float t = static_cast<float>(time);
 
     std::vector<net::EntityState> states;
-    states.reserve(8);
+    states.reserve(10);
 
     // ── VIPER01 — blue jet, CW orbit at 3 000 m altitude, R=5 000 m ──────────
     {
-        const float speed  = 200.0f;           // m/s
+        const float speed  = 220.0f;           // m/s
         const float radius = 5000.0f;
         const float omega  = speed / radius;   // rad/s
         float x, y, z, psi;
         orbit(0, 3000, 0, radius, omega * t, x, y, z, psi);
-
-        // Gentle bank into the turn: phi ≈ atan(v²/R/g) in degrees ≈ 22°
+        // Gentle bank into the turn
         states.push_back(make_state(1, net::TYPE_JET, "VIPER01", x, y, z,
                                     psi, 0.0f, 22.0f, speed));
     }
 
-    // ── VIPER02 — red jet, CCW orbit at 4 000 m, R=7 000 m ───────────────────
+    // ── VIPER02 — red jet, CCW orbit at 5 500 m, R=8 000 m ───────────────────
     {
-        const float speed  = 250.0f;
-        const float radius = 7000.0f;
+        const float speed  = 280.0f;
+        const float radius = 8000.0f;
         const float omega  = speed / radius;
         float x, y, z, psi;
-        orbit(1000, 4000, -500, radius, -(omega * t) + 0.8f, x, y, z, psi);
-        // CCW: negate theta and adjust psi
+        orbit(-500, 5500, 500, radius, -(omega * t) + 0.8f, x, y, z, psi);
         psi = fmodf(psi + 180.0f, 360.0f);
-
         states.push_back(make_state(2, net::TYPE_JET, "VIPER02", x, y, z,
                                     psi, 0.0f, -22.0f, speed));
     }
 
-    // ── AIM-120 — missile, launches from VIPER01 at t=15 s ───────────────────
-    if (t >= 15.0f && t < 45.0f) {
+    // ── VIPER03 — intercept jet, figure-8 at 4 200 m ──────────────────────────
+    {
+        const float speed = 240.0f;
+        // Figure-8 using Lissajous
+        float lx = 6000.0f * sinf(t * 0.025f);
+        float lz = 4000.0f * sinf(t * 0.05f);
+        float psi = atan2f(6000.0f * 0.025f * cosf(t * 0.025f),
+                           -(4000.0f * 0.05f * cosf(t * 0.05f))) * 180.0f / static_cast<float>(M_PI);
+        states.push_back(make_state(6, net::TYPE_JET, "VIPER03", lx, 4200.0f, lz,
+                                    psi, 0.0f, 15.0f, speed));
+    }
+
+    // ── AIM-120 — missile, launches from VIPER01 at t=12 s ───────────────────
+    if (t >= 12.0f && t < 50.0f) {
         if (!missile_fired_) {
-            // Snapshot VIPER01 launch position
-            const float speed  = 200.0f;
+            const float speed  = 220.0f;
             const float radius = 5000.0f;
             const float omega  = speed / radius;
             float psi_unused;
-            orbit(0, 3000, 0, radius, omega * 15.0f,
+            orbit(0, 3000, 0, radius, omega * 12.0f,
                   missile_x_, missile_y_, missile_z_, psi_unused);
             missile_fired_ = missile_active_ = true;
         }
 
         // Fly toward VIPER02's current position
-        const float speed2 = 250.0f;
-        const float radius2= 7000.0f;
+        const float speed2 = 280.0f;
+        const float radius2= 8000.0f;
         const float omega2 = speed2 / radius2;
         float tx, ty, tz, tp;
-        orbit(1000, 4000, -500, radius2, -(omega2 * t) + 0.8f, tx, ty, tz, tp);
+        orbit(-500, 5500, 500, radius2, -(omega2 * t) + 0.8f, tx, ty, tz, tp);
 
         float dx = tx - missile_x_;
         float dy = ty - missile_y_;
         float dz = tz - missile_z_;
         float dist = sqrtf(dx*dx + dy*dy + dz*dz) + 0.001f;
 
-        const float missile_speed = 500.0f; // m/s
+        const float missile_speed = 600.0f; // m/s
         float step = missile_speed * dt_sec;
 
         missile_x_ += dx / dist * step;
@@ -140,31 +148,46 @@ std::vector<net::EntityState> DemoMode::tick(float dt_sec) {
         states.push_back(make_state(3, net::TYPE_MISSILE, "AIM120",
                                     missile_x_, missile_y_, missile_z_,
                                     psi, theta, 0.0f, missile_speed));
-    } else if (t >= 45.0f) {
+    } else if (t >= 50.0f) {
         missile_active_ = false;
     }
 
-    // ── BRAVO1 — static AAA site at (2000, 0, -3000) ─────────────────────────
+    // ── BRAVO1 — static AAA site at (3000, 0, -4000) ─────────────────────────
     {
+        // Rotate turret slowly
+        float turret_heading = fmodf(t * 15.0f, 360.0f);
         states.push_back(make_state(4, net::TYPE_AAA, "BRAVO1",
-                                    2000.0f, 0.0f, -3000.0f,
-                                    0.0f, 0.0f, 0.0f, 0.0f));
+                                    3000.0f, 0.0f, -4000.0f,
+                                    turret_heading, 0.0f, 0.0f, 0.0f));
     }
 
-    // ── EAGLE01 — helicopter, slow CCW patrol at 200 m, R=1 500 m ────────────
+    // ── EAGLE01 — helicopter, slow CCW patrol at 300 m, R=2 000 m ────────────
     {
-        const float speed  = 60.0f;
-        const float radius = 1500.0f;
+        const float speed  = 55.0f;
+        const float radius = 2000.0f;
         const float omega  = speed / radius;
         float x, y, z, psi;
-        orbit(-2000, 200, 1000, radius, -(omega * t) + (float)M_PI, x, y, z, psi);
+        orbit(-2500, 300, 1500, radius, -(omega * t) + static_cast<float>(M_PI), x, y, z, psi);
         psi = fmodf(psi + 180.0f, 360.0f);
 
-        // Gentle hover oscillation
-        y += 20.0f * sinf(t * 0.3f);
+        // Hover oscillation
+        y += 30.0f * sinf(t * 0.4f);
 
         states.push_back(make_state(5, net::TYPE_HELO, "EAGLE01",
                                     x, y, z, psi, 0.0f, 5.0f, speed));
+    }
+
+    // ── DESTROYER — naval ship, slow coastal patrol ───────────────────────────
+    {
+        // Slow S-curve route
+        float sx = -8000.0f + t * 4.0f;  // ~4 m/s ~ 8 knots
+        float sz = 2000.0f * sinf(t * 0.005f);
+        float heading = atan2f(4.0f, 2000.0f * 0.005f * cosf(t * 0.005f)) * 180.0f / static_cast<float>(M_PI);
+        heading = fmodf(heading + 90.0f, 360.0f);
+
+        // Keep ship on sea (slightly below 0 terrain level)
+        states.push_back(make_state(7, net::TYPE_SHIP, "DESTRY1",
+                                    sx, -5.0f, sz, heading, 0.0f, 0.0f, 4.0f));
     }
 
     return states;

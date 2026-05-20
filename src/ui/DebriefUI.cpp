@@ -285,32 +285,123 @@ void DebriefUI::draw_timeline(PlaybackController& pb,
 void DebriefUI::draw_entity_list(const flecs::world& world)
 {
     ImGui::SetNextWindowPos({0, 40.0f});
-    ImGui::SetNextWindowSize({210.0f, static_cast<float>(GetScreenHeight()) - 175.0f});
-    ImGui::Begin("Entities", nullptr,
-                 ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
+    ImGui::SetNextWindowSize({220.0f, static_cast<float>(GetScreenHeight()) - 175.0f});
+    ImGui::Begin("##SidePanel", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
-    auto q = world.query<const EntityMeta, const Position>();
-    q.each([&](flecs::entity e, const EntityMeta& meta, const Position& /*pos*/) {
-        char label[64];
-        if (meta.callsign[0])
-            snprintf(label, sizeof(label), "%s  %s", entity_type_icon(meta.type), meta.callsign);
-        else
-            snprintf(label, sizeof(label), "%s  #%u", entity_type_icon(meta.type), meta.entity_id);
-
-        bool selected = (state_.selected_entity == e);
-        if (ImGui::Selectable(label, selected))
-            state_.selected_entity = selected ? flecs::entity{} : e;
-
-        if (!meta.active) {
-            ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.25f, 0.25f, 1.0f));
-            ImGui::Text(" [X]");
+    if (ImGui::BeginTabBar("LeftTabs")) {
+        // ── Entities Tab ──────────────────────────────────────────────────────
+        if (ImGui::BeginTabItem(" Units ")) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.7f, 1.0f, 0.8f));
+            ImGui::TextUnformatted("TRACK LIST");
             ImGui::PopStyleColor();
+            ImGui::Separator();
+
+            auto q = world.query<const EntityMeta, const Position, const Velocity>();
+            q.each([&](flecs::entity e, const EntityMeta& meta, const Position& pos, const Velocity& vel) {
+                char label[80];
+                if (meta.callsign[0])
+                    snprintf(label, sizeof(label), "%s  %s", entity_type_icon(meta.type), meta.callsign);
+                else
+                    snprintf(label, sizeof(label), "%s  #%u", entity_type_icon(meta.type), meta.entity_id);
+
+                bool selected = (state_.selected_entity == e);
+
+                if (!meta.active) {
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.55f, 0.65f, 0.75f));
+                }
+
+                if (ImGui::Selectable(label, selected, 0, ImVec2(0, 32))) {
+                    state_.selected_entity = selected ? flecs::entity{} : e;
+                }
+
+                if (!meta.active) {
+                    ImGui::PopStyleColor();
+                } else {
+                    // Altitude and speed mini info row
+                    float spd = sqrtf(vel.v.x*vel.v.x + vel.v.y*vel.v.y + vel.v.z*vel.v.z);
+                    ImGui::SameLine(0, 4);
+                    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 15);
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.65f, 0.9f, 0.75f));
+                    ImGui::Text("%.0fm  %.0fkt", pos.v.y, spd * 1.944f);
+                    ImGui::PopStyleColor();
+                }
+
+                if (selected && meta.active) {
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.38f, 0.6f, 0.85f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.5f, 0.8f, 1.0f));
+                    if (ImGui::SmallButton("  FOCUS  ")) state_.camera_mode = 1;
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton(" CHASE "))  state_.camera_mode = 2;
+                    ImGui::PopStyleColor(2);
+                }
+            });
+
+            ImGui::EndTabItem();
         }
-    });
+
+        // ── Visuals Tab ───────────────────────────────────────────────────────
+        if (ImGui::BeginTabItem(" Camera ")) {
+            // Camera mode
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.75f, 1.0f, 1.0f));
+            ImGui::TextUnformatted("CAMERA MODE");
+            ImGui::PopStyleColor();
+
+            const char* cam_modes[] = { "  Free Orbit", "  Focus Target", "  Chase Cam" };
+            ImGui::SetNextItemWidth(-1);
+            ImGui::Combo("##CamMode", &state_.camera_mode, cam_modes, IM_ARRAYSIZE(cam_modes));
+
+            if (state_.camera_mode > 0 && !state_.selected_entity.is_valid()) {
+                ImGui::TextColored({1.0f, 0.5f, 0.3f, 1.0f}, "! Select an entity");
+            }
+
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.75f, 1.0f, 1.0f));
+            ImGui::TextUnformatted("CONTROLS");
+            ImGui::PopStyleColor();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.65f, 0.8f, 0.9f));
+            ImGui::TextUnformatted("RMB+drag  Rotate");
+            ImGui::TextUnformatted("Scroll    Zoom");
+            ImGui::TextUnformatted("WASD      Pan");
+            ImGui::TextUnformatted("Shift     Fast pan");
+            ImGui::TextUnformatted("F         Toggle focus");
+            ImGui::PopStyleColor();
+
+            ImGui::Separator();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.75f, 1.0f, 1.0f));
+            ImGui::TextUnformatted("SCENE SCALE");
+            ImGui::PopStyleColor();
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##Scale", &state_.entity_3d_scale, 1.0f, 150.0f, "Entities: %.0fx");
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##TWidth", &state_.trail_width_override, 5.0f, 500.0f, "Trail W: %.0fm");
+
+            ImGui::Separator();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.75f, 1.0f, 1.0f));
+            ImGui::TextUnformatted("TERRAIN");
+            ImGui::PopStyleColor();
+            ImGui::Checkbox("Solid Fill",     &state_.terrain_solid);
+            ImGui::Checkbox("Grid Overlay",   &state_.terrain_wireframe);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##Hills", &state_.terrain_height_scale, 0.0f, 4.0f, "Hills: %.1fx");
+
+            ImGui::Separator();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.75f, 1.0f, 1.0f));
+            ImGui::TextUnformatted("OVERLAYS");
+            ImGui::PopStyleColor();
+            ImGui::Checkbox("Callsign Labels",  &state_.show_labels);
+            ImGui::Checkbox("Trail Lines",      &state_.show_trails);
+            ImGui::Checkbox("Ribbon Mode",      &state_.ribbon_trails);
+            ImGui::Checkbox("Velocity Vectors", &state_.show_velocity_vec);
+
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
 
     ImGui::End();
 }
+
 
 // ── Inspector ─────────────────────────────────────────────────────────────────
 void DebriefUI::draw_inspector(const flecs::world& world)
