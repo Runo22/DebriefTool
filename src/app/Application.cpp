@@ -606,47 +606,120 @@ void Application::handle_input(float /*dt*/) {
     if (IsKeyPressed(KEY_TWO))   playback_.set_speed(1.0f);
     if (IsKeyPressed(KEY_THREE)) playback_.set_speed(4.0f);
     if (IsKeyPressed(KEY_FOUR))  playback_.set_speed(-1.0f);
+
+    // ── Left-click entity selection in 3D viewport ────────────────────────────
+    // Only when ImGui is not capturing the mouse
+    if (!ImGui::GetIO().WantCaptureMouse && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        Ray ray = GetMouseRay(GetMousePosition(), camera_);
+        float best_dist = 1e10f;
+        flecs::entity best_ent{};
+
+        world_.query<const ecs::EntityMeta, const ecs::Position>()
+            .each([&](flecs::entity e, const ecs::EntityMeta& meta, const ecs::Position& pos) {
+                if (!meta.active) return;
+                // Hit-test against a screen-space sphere whose radius scales with camera distance
+                float pick_r = ui_.state().entity_3d_scale * 30.0f;
+                Vector3 to_center = Vector3Subtract(pos.v, ray.position);
+                float t = Vector3DotProduct(to_center, ray.direction);
+                if (t < 0) return;
+                Vector3 closest = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
+                float dist = Vector3Length(Vector3Subtract(closest, pos.v));
+                if (dist < pick_r && t < best_dist) {
+                    best_dist = t;
+                    best_ent  = e;
+                }
+            });
+
+        if (best_ent.is_valid()) {
+            // Toggle selection
+            ui_.state().selected_entity = (ui_.state().selected_entity == best_ent)
+                ? flecs::entity{} : best_ent;
+        }
+    }
 }
 
 void Application::draw_terrain() {
     auto& state = ui_.state();
     if (!state.terrain_solid && !state.terrain_wireframe) return;
 
-    constexpr int GRID_SIZE = 60;
-    constexpr float TILE_SIZE = 1000.0f;
-    constexpr float START_POS = -(GRID_SIZE * TILE_SIZE) / 2.0f;
+    // ── LOD: adapt grid resolution to camera distance ─────────────────────────
+    // Close  (<3km):  step=1 → 80x80 tiles @ 1km  (full detail)
+    // Medium (3-10km): step=2 → 40x40 tiles @ 2km
+    // Far   (10-25km): step=4 → 20x20 tiles @ 4km
+    // Very far (>25km): step=8 → 10x10 tiles @ 8km (coarse silhouette)
+    const float cam_dist = state.camera_distance;
+    int lod_step = 1;
+    if      (cam_dist > 25000.0f) lod_step = 8;
+    else if (cam_dist > 10000.0f) lod_step = 4;
+    else if (cam_dist >  3000.0f) lod_step = 2;
 
-    auto get_height = [&](int ix, int iz) -> float {
-        float x = START_POS + ix * TILE_SIZE;
-        float z = START_POS + iz * TILE_SIZE;
+    constexpr int   FULL_GRID = 80;            // 80 columns/rows at step=1
+    constexpr float BASE_TILE = 1000.0f;       // 1 km base tile
+    float tile_sz = BASE_TILE * lod_step;
+    int   grid_n  = FULL_GRID / lod_step;     // tiles per axis at this LOD
+    float start   = -(grid_n * tile_sz) * 0.5f;
 
-        float h = 500.0f * sinf(x * 0.0001f) * cosf(z * 0.0001f)
-                + 250.0f * sinf(x * 0.0003f + 1.0f) * sinf(z * 0.0002f)
-                + 60.0f  * cosf(x * 0.0008f) * cosf(z * 0.0007f);
-
-        float dist_from_center = sqrtf(x*x + z*z);
-        float flat_factor = (dist_from_center - 3000.0f) / 12000.0f;
-        if (flat_factor < 0.0f) flat_factor = 0.0f;
-        if (flat_factor > 1.0f) flat_factor = 1.0f;
-
-        return h * flat_factor * state.terrain_height_scale - 10.0f * (1.0f - flat_factor);
+    // Height function (world-space coords)
+    auto get_height = [&](float wx, float wz) -> float {
+        float h = 800.0f * sinf(wx * 0.00006f) * cosf(wz * 0.00006f)
+                + 350.0f * sinf(wx * 0.00015f + 0.8f) * sinf(wz * 0.00012f + 1.2f)
+                + 120.0f * cosf(wx * 0.0004f + 2.0f)  * cosf(wz * 0.0003f)
+                +  40.0f * sinf(wx * 0.001f)           * sinf(wz * 0.001f);
+        // Flatten central zone (operational area)
+        float dist = sqrtf(wx*wx + wz*wz);
+        float flat = std::clamp((dist - 4000.0f) / 14000.0f, 0.0f, 1.0f);
+        return h * flat * state.terrain_height_scale;
     };
 
+    // Height → color  (dark green → earthy brown → rocky grey → snow white)
+    auto terrain_color = [&](float h) {
+        float nh = (state.terrain_height_scale > 0.01f)
+                   ? std::clamp(h / (800.0f * state.terrain_height_scale), 0.0f, 1.0f)
+                   : 0.0f;
+        unsigned char r, g, b;
+        if (nh < 0.25f) {
+            // Deep valley: near-black dark teal
+            float t = nh / 0.25f;
+            r = (unsigned char)(10  + t * 25);
+            g = (unsigned char)(40  + t * 50);
+            b = (unsigned char)(20  + t * 20);
+        } else if (nh < 0.5f) {
+            // Mid slope: forest green
+            float t = (nh - 0.25f) / 0.25f;
+            r = (unsigned char)(35  + t * 70);
+            g = (unsigned char)(90  - t * 20);
+            b = (unsigned char)(40  - t * 10);
+        } else if (nh < 0.75f) {
+            // Upper slope: earthy brown
+            float t = (nh - 0.5f) / 0.25f;
+            r = (unsigned char)(105 + t * 80);
+            g = (unsigned char)(70  + t * 30);
+            b = (unsigned char)(30  + t * 20);
+        } else {
+            // Peak: grey rock
+            float t = (nh - 0.75f) / 0.25f;
+            r = (unsigned char)(185 + t * 50);
+            g = (unsigned char)(100 + t * 55);
+            b = (unsigned char)(50  + t * 60);
+        }
+        rlColor4ub(r, g, b, 255);
+    };
+
+    // ── Solid terrain ─────────────────────────────────────────────────────────
     if (state.terrain_solid) {
         rlBegin(RL_QUADS);
-        for (int iz = 0; iz < GRID_SIZE; ++iz) {
-            for (int ix = 0; ix < GRID_SIZE; ++ix) {
-                float x0 = START_POS + ix * TILE_SIZE;
-                float z0 = START_POS + iz * TILE_SIZE;
-                float x1 = x0 + TILE_SIZE;
-                float z1 = z0 + TILE_SIZE;
+        for (int iz = 0; iz < grid_n; ++iz) {
+            for (int ix = 0; ix < grid_n; ++ix) {
+                float x0 = start + ix * tile_sz,  z0 = start + iz * tile_sz;
+                float x1 = x0 + tile_sz,          z1 = z0 + tile_sz;
 
-                float h00 = get_height(ix, iz);
-                float h10 = get_height(ix + 1, iz);
-                float h11 = get_height(ix + 1, iz + 1);
-                float h01 = get_height(ix, iz + 1);
+                float h00 = get_height(x0, z0);
+                float h10 = get_height(x1, z0);
+                float h11 = get_height(x1, z1);
+                float h01 = get_height(x0, z1);
+                float havg = (h00 + h10 + h11 + h01) * 0.25f;
 
-                rlColor4ub(10, 18, 28, 255);
+                terrain_color(havg);
                 rlVertex3f(x0, h00, z0);
                 rlVertex3f(x0, h01, z1);
                 rlVertex3f(x1, h11, z1);
@@ -656,62 +729,96 @@ void Application::draw_terrain() {
         rlEnd();
     }
 
+    // ── Grid wireframe — only draw when close enough to see detail ────────────
+    // Fade out grid lines at long range (they become visual noise)
     if (state.terrain_wireframe) {
-        rlBegin(RL_LINES);
-        for (int iz = 0; iz < GRID_SIZE; ++iz) {
-            for (int ix = 0; ix < GRID_SIZE; ++ix) {
-                float x0 = START_POS + ix * TILE_SIZE;
-                float z0 = START_POS + iz * TILE_SIZE;
-                float x1 = x0 + TILE_SIZE;
-                float z1 = z0 + TILE_SIZE;
+        // Compute alpha based on camera distance — fade from 70 → 0 between 8km and 20km
+        float alpha_f = 1.0f - std::clamp((cam_dist - 8000.0f) / 12000.0f, 0.0f, 1.0f);
+        unsigned char grid_alpha = (unsigned char)(alpha_f * 55.0f);
+        if (grid_alpha > 2) {
+            rlBegin(RL_LINES);
+            for (int iz = 0; iz < grid_n; ++iz) {
+                for (int ix = 0; ix < grid_n; ++ix) {
+                    float x0 = start + ix * tile_sz, z0 = start + iz * tile_sz;
+                    float x1 = x0 + tile_sz,          z1 = z0 + tile_sz;
 
-                float h00 = get_height(ix, iz);
-                float h10 = get_height(ix + 1, iz);
-                float h11 = get_height(ix + 1, iz + 1);
-                float h01 = get_height(ix, iz + 1);
+                    float h00 = get_height(x0, z0);
+                    float h10 = get_height(x1, z0);
+                    float h11 = get_height(x1, z1);
+                    float h01 = get_height(x0, z1);
 
-                rlColor4ub(0, 120, 200, 70);
+                    rlColor4ub(0, 110, 190, grid_alpha);
+                    rlVertex3f(x0, h00 + 2.0f, z0);
+                    rlVertex3f(x0, h01 + 2.0f, z1);
 
-                rlVertex3f(x0, h00, z0);
-                rlVertex3f(x0, h01, z1);
+                    rlVertex3f(x0, h00 + 2.0f, z0);
+                    rlVertex3f(x1, h10 + 2.0f, z0);
 
-                rlVertex3f(x0, h00, z0);
-                rlVertex3f(x1, h10, z0);
+                    rlVertex3f(x0, h01 + 2.0f, z1);
+                    rlVertex3f(x1, h11 + 2.0f, z1);
 
-                rlVertex3f(x0, h01, z1);
-                rlVertex3f(x1, h11, z1);
-
-                rlVertex3f(x1, h10, z0);
-                rlVertex3f(x1, h11, z1);
+                    rlVertex3f(x1, h10 + 2.0f, z0);
+                    rlVertex3f(x1, h11 + 2.0f, z1);
+                }
             }
+            rlEnd();
         }
-        rlEnd();
     }
 }
 
 void Application::update_camera_state(float dt) {
     auto& state = ui_.state();
+    const bool ui_wants_mouse = ImGui::GetIO().WantCaptureMouse;
 
-    if (!ImGui::GetIO().WantCaptureMouse) {
+    // ── Scroll wheel: zoom ────────────────────────────────────────────────────
+    if (!ui_wants_mouse) {
         float wheel = GetMouseWheelMove();
         if (wheel != 0.0f) {
-            state.camera_distance -= wheel * (state.camera_distance * 0.15f);
-            if (state.camera_distance < 20.0f) state.camera_distance = 20.0f;
-            if (state.camera_distance > 50000.0f) state.camera_distance = 50000.0f;
-        }
-
-        if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
-            Vector2 delta = GetMouseDelta();
-            state.camera_yaw   += delta.x * 0.25f;
-            state.camera_pitch -= delta.y * 0.25f;
-            if (state.camera_pitch > 85.0f)  state.camera_pitch = 85.0f;
-            if (state.camera_pitch < -85.0f) state.camera_pitch = -85.0f;
+            // Exponential zoom — faster when far, slower when close
+            state.camera_distance *= powf(0.88f, wheel);
+            state.camera_distance  = std::clamp(state.camera_distance, 30.0f, 80000.0f);
         }
     }
 
+    // ── RMB: orbit / rotate in Free and Focus modes ──────────────────────────
+    // In Chase mode, RMB adjusts chase yaw offset instead
+    if (!ui_wants_mouse && IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+        Vector2 delta = GetMouseDelta();
+        // Sensitivity scales slightly with zoom so distant orbit feels right
+        float sens = 0.20f + 0.05f * std::clamp(state.camera_distance / 20000.0f, 0.0f, 1.5f);
+        if (state.camera_mode == 2) {
+            // In chase mode — adjust lateral yaw offset around entity
+            state.chase_yaw_offset   += delta.x * 0.3f;
+            state.chase_pitch_offset -= delta.y * 0.2f;
+            state.chase_pitch_offset  = std::clamp(state.chase_pitch_offset, -30.0f, 60.0f);
+        } else {
+            state.camera_yaw   += delta.x * sens;
+            state.camera_pitch -= delta.y * sens;
+            state.camera_pitch  = std::clamp(state.camera_pitch, -89.0f, 89.0f);
+        }
+    }
+
+    // ── MMB: pan the camera target ───────────────────────────────────────────
+    // Feels natural in any CAD/3D tool — drag the ground plane under the cursor
+    if (!ui_wants_mouse && IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)
+        && state.camera_mode == 0) {
+        Vector2 delta = GetMouseDelta();
+        float yaw_rad = state.camera_yaw * DEG2RAD;
+        Vector3 cam_right   = { cosf(yaw_rad), 0.0f, -sinf(yaw_rad) };
+        Vector3 cam_forward = { sinf(yaw_rad), 0.0f,  cosf(yaw_rad) };
+        // Pan speed proportional to distance so it feels 1:1 with the scene
+        float pan_scale = state.camera_distance * 0.0012f;
+        camera_free_target_ = Vector3Subtract(camera_free_target_,
+            Vector3Scale(cam_right,   delta.x * pan_scale));
+        camera_free_target_ = Vector3Add(camera_free_target_,
+            Vector3Scale(cam_forward, delta.y * pan_scale));
+    }
+
+    // ── F key: toggle focus on selected entity ────────────────────────────────
     flecs::entity sel = state.selected_entity;
     if (IsKeyPressed(KEY_F) && sel.is_valid() && world_.is_alive(sel)) {
-        if (state.camera_mode == 1) {
+        if (state.camera_mode >= 1) {
+            // Return to free orbit, pivot point on where entity was
             state.camera_mode = 0;
             if (sel.has<ecs::Position>())
                 camera_free_target_ = sel.get<ecs::Position>().v;
@@ -720,64 +827,109 @@ void Application::update_camera_state(float dt) {
         }
     }
 
+    // ── G key: toggle chase cam ───────────────────────────────────────────────
+    if (IsKeyPressed(KEY_G) && sel.is_valid() && world_.is_alive(sel)) {
+        state.camera_mode = (state.camera_mode == 2) ? 0 : 2;
+        if (state.camera_mode == 2) {
+            state.chase_yaw_offset   = 0.0f;
+            state.chase_pitch_offset = 20.0f;  // default: slightly above-behind
+        }
+    }
+
+    // ── MODE 1: Focus Orbit — orbit around selected entity ────────────────────
     if (state.camera_mode == 1 && sel.is_valid() && world_.is_alive(sel)) {
         if (sel.has<ecs::Position>()) {
             Vector3 ent_pos = sel.get<ecs::Position>().v;
-            camera_.target = ent_pos;
+            camera_.target  = ent_pos;
 
             float pitch_rad = state.camera_pitch * DEG2RAD;
-            float yaw_rad = state.camera_yaw * DEG2RAD;
-            Vector3 offset = {
+            float yaw_rad   = state.camera_yaw   * DEG2RAD;
+            camera_.position = Vector3Add(ent_pos, {
                 state.camera_distance * cosf(pitch_rad) * sinf(yaw_rad),
                 state.camera_distance * sinf(pitch_rad),
                 state.camera_distance * cosf(pitch_rad) * cosf(yaw_rad)
-            };
-            camera_.position = Vector3Add(camera_.target, offset);
+            });
             camera_.up = { 0.0f, 1.0f, 0.0f };
         }
     }
+    // ── MODE 2: Chase Camera — fly behind entity, angled down ─────────────────
     else if (state.camera_mode == 2 && sel.is_valid() && world_.is_alive(sel)) {
-        if (sel.has<ecs::Position>() && sel.has<ecs::Rotation>()) {
-            Vector3 ent_pos = sel.get<ecs::Position>().v;
+        if (sel.has<ecs::Position>() && sel.has<ecs::Rotation>() && sel.has<ecs::Velocity>()) {
+            Vector3    ent_pos = sel.get<ecs::Position>().v;
             Quaternion ent_rot = sel.get<ecs::Rotation>().q;
+            Vector3    ent_vel = sel.get<ecs::Velocity>().v;
 
-            Vector3 forward = Vector3RotateByQuaternion({0, 0, -1}, ent_rot);
-            Vector3 up      = Vector3RotateByQuaternion({0, 1, 0}, ent_rot);
+            // Entity's local axes
+            Vector3 fwd = Vector3Normalize(Vector3RotateByQuaternion({0, 0, -1}, ent_rot));
+            Vector3 up  = Vector3Normalize(Vector3RotateByQuaternion({0, 1,  0}, ent_rot));
+            Vector3 rgt = Vector3CrossProduct(fwd, up);
 
-            float dist = state.camera_distance * 0.12f;
-            if (dist < 30.0f) dist = 30.0f;
-            float height = dist * 0.3f;
+            // Chase distance scales with camera_distance slider
+            float base_dist = std::max(200.0f, state.camera_distance * 0.08f);
 
-            Vector3 chase_offset = Vector3Add(Vector3Scale(forward, -dist), Vector3Scale(up, height));
-            Vector3 target_pos = Vector3Add(ent_pos, chase_offset);
+            // Apply user yaw/pitch offsets (RMB drag while in chase mode)
+            float cy = state.chase_yaw_offset   * DEG2RAD;
+            float cp = state.chase_pitch_offset * DEG2RAD;
 
-            camera_.position = Vector3Lerp(camera_.position, target_pos, 8.0f * dt);
-            camera_.target   = Vector3Add(ent_pos, Vector3Scale(forward, 100.0f));
-            camera_.up       = up;
+            // Rotate the back-vector by user offset to allow swinging around
+            Vector3 back_dir = Vector3Negate(fwd);
+            // Yaw offset: spin around world-up
+            back_dir = Vector3RotateByQuaternion(back_dir,
+                QuaternionFromAxisAngle({0,1,0}, cy));
+            // Pitch offset: tilt up/down
+            back_dir = Vector3RotateByQuaternion(back_dir,
+                QuaternionFromAxisAngle(rgt, cp));
+
+            // Camera sits base_dist behind + elevated to give a top-down view angle
+            float height_mult = 0.45f + state.chase_pitch_offset * 0.008f;
+            Vector3 cam_offset = Vector3Add(
+                Vector3Scale(back_dir, base_dist),
+                Vector3Scale({0, 1, 0}, base_dist * height_mult)
+            );
+
+            Vector3 desired_pos = Vector3Add(ent_pos, cam_offset);
+
+            // Spring-damped smoothing — tight enough to feel responsive
+            float alpha = 1.0f - expf(-8.0f * dt);
+            camera_.position = Vector3Lerp(camera_.position, desired_pos, alpha);
+
+            // Look slightly ahead of the entity (in the direction of motion)
+            float speed = Vector3Length(ent_vel);
+            float look_ahead = std::min(speed * 1.5f, base_dist * 1.2f);
+            Vector3 look_target = Vector3Add(ent_pos, Vector3Scale(fwd, look_ahead));
+            camera_.target = Vector3Lerp(camera_.target, look_target, alpha);
+            camera_.up     = { 0.0f, 1.0f, 0.0f };
         }
     }
+    // ── MODE 0: Free Orbit ────────────────────────────────────────────────────
     else {
         float yaw_rad = state.camera_yaw * DEG2RAD;
-        Vector3 forward = { sinf(yaw_rad), 0.0f, cosf(yaw_rad) };
+        Vector3 forward = { sinf(yaw_rad), 0.0f,  cosf(yaw_rad) };
         Vector3 right   = { cosf(yaw_rad), 0.0f, -sinf(yaw_rad) };
 
-        float pan_speed = state.camera_distance * 0.5f * dt;
-        if (IsKeyDown(KEY_LEFT_SHIFT)) pan_speed *= 3.0f;
+        // WASD keyboard pan — speed scales with zoom level
+        if (!ui_wants_mouse) {
+            float pan_speed = state.camera_distance * 0.45f * dt;
+            if (IsKeyDown(KEY_LEFT_SHIFT)) pan_speed *= 4.0f;
 
-        if (IsKeyDown(KEY_W)) camera_free_target_ = Vector3Subtract(camera_free_target_, Vector3Scale(forward, pan_speed));
-        if (IsKeyDown(KEY_S)) camera_free_target_ = Vector3Add(camera_free_target_, Vector3Scale(forward, pan_speed));
-        if (IsKeyDown(KEY_A)) camera_free_target_ = Vector3Subtract(camera_free_target_, Vector3Scale(right, pan_speed));
-        if (IsKeyDown(KEY_D)) camera_free_target_ = Vector3Add(camera_free_target_, Vector3Scale(right, pan_speed));
+            if (IsKeyDown(KEY_W) || IsKeyDown(KEY_UP))
+                camera_free_target_ = Vector3Subtract(camera_free_target_, Vector3Scale(forward, pan_speed));
+            if (IsKeyDown(KEY_S) || IsKeyDown(KEY_DOWN))
+                camera_free_target_ = Vector3Add(camera_free_target_, Vector3Scale(forward, pan_speed));
+            if (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT))
+                camera_free_target_ = Vector3Subtract(camera_free_target_, Vector3Scale(right, pan_speed));
+            if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT))
+                camera_free_target_ = Vector3Add(camera_free_target_, Vector3Scale(right, pan_speed));
+        }
 
         camera_.target = camera_free_target_;
 
         float pitch_rad = state.camera_pitch * DEG2RAD;
-        Vector3 offset = {
+        camera_.position = Vector3Add(camera_.target, {
             state.camera_distance * cosf(pitch_rad) * sinf(yaw_rad),
             state.camera_distance * sinf(pitch_rad),
             state.camera_distance * cosf(pitch_rad) * cosf(yaw_rad)
-        };
-        camera_.position = Vector3Add(camera_.target, offset);
+        });
         camera_.up = { 0.0f, 1.0f, 0.0f };
     }
 }

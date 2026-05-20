@@ -59,6 +59,10 @@ struct UIState {
     float entity_3d_scale = 20.0f;         // Visual scale multiplier
     float trail_width_override = 15.0f;    // Trail width override in meters
 
+    // Chase camera offsets (modified by RMB drag while in mode 2)
+    float chase_yaw_offset   =   0.0f;    // degrees, lateral swing around entity
+    float chase_pitch_offset =  20.0f;    // degrees, 0=dead-behind, +ve=look down from above
+
     // Terrain settings
     bool  terrain_solid = true;
     bool  terrain_wireframe = true;

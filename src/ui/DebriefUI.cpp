@@ -360,11 +360,14 @@ void DebriefUI::draw_entity_list(const flecs::world& world)
             ImGui::TextUnformatted("CONTROLS");
             ImGui::PopStyleColor();
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.65f, 0.8f, 0.9f));
-            ImGui::TextUnformatted("RMB+drag  Rotate");
-            ImGui::TextUnformatted("Scroll    Zoom");
-            ImGui::TextUnformatted("WASD      Pan");
-            ImGui::TextUnformatted("Shift     Fast pan");
-            ImGui::TextUnformatted("F         Toggle focus");
+            ImGui::TextUnformatted("LMB        Click to select");
+            ImGui::TextUnformatted("RMB+drag   Rotate / Chase adj");
+            ImGui::TextUnformatted("MMB+drag   Pan scene");
+            ImGui::TextUnformatted("Scroll     Zoom in/out");
+            ImGui::TextUnformatted("WASD/Arrows  Pan (free)");
+            ImGui::TextUnformatted("Shift      4x faster pan");
+            ImGui::TextUnformatted("F          Focus / Free toggle");
+            ImGui::TextUnformatted("G          Chase cam toggle");
             ImGui::PopStyleColor();
 
             ImGui::Separator();
