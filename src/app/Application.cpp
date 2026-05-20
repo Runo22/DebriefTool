@@ -94,7 +94,7 @@ void Application::init_ecs() {
 }
 
 void Application::init_assets() {
-    // Procedural shapes are created in AssetManager constructor.
+    assets_.init(); // requires InitWindow() to have been called first
     // To load custom models:
     //   assets_.load("my_jet", "assets/models/jet.glb", 0.01f);
     //   assets_.map_type(net::TYPE_JET, "my_jet");

@@ -36,8 +36,11 @@ struct ModelEntry {
 
 class AssetManager {
 public:
-    AssetManager();
+    AssetManager() = default;
     ~AssetManager();
+
+    // Must be called after InitWindow() — allocates GPU resources.
+    void init();
 
     AssetManager(const AssetManager&)            = delete;
     AssetManager& operator=(const AssetManager&) = delete;

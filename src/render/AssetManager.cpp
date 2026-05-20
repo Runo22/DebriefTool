@@ -90,7 +90,7 @@ void AssetManager::init_procedural() {
     ready_ = true;
 }
 
-AssetManager::AssetManager()  { init_procedural(); }
+void AssetManager::init()     { init_procedural(); }
 
 AssetManager::~AssetManager() { unload_all(); }
 
