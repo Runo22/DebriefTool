@@ -128,7 +128,13 @@ if(MSVC)
         /permissive-  # strict standards conformance
         /arch:AVX2    # AVX2 intrinsics on x64
         /wd4201       # anonymous struct/union (used in raymath.h headers we include)
+        /wd4324       # structure padded due to alignas — intentional in SPSCQueue
     )
+    # NOGDI/NOUSER prevent wingdi.h and winuser.h from being included via winsock2.h
+    # in our TUs. Those headers declare Rectangle() and DrawText() as Win32 API
+    # functions that conflict with raylib's Rectangle struct and DrawText function.
+    # Applied per-target so GLFW (a separate target) still gets those headers.
+    target_compile_definitions(debrief PRIVATE NOGDI NOUSER)
 else()
     target_compile_options(debrief PRIVATE
         -Wall

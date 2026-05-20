@@ -224,7 +224,6 @@ void DebriefUI::draw_inspector(const flecs::world& world)
     auto e = state_.selected_entity;
     const auto *meta = &e.get<EntityMeta>();
     const auto *pos = &e.get<Position>();
-    const auto *rot = &e.get<Rotation>();
     const auto *vel = &e.get<Velocity>();
 
     if (meta) {
