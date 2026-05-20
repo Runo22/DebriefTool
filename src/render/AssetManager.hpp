@@ -55,10 +55,9 @@ public:
     [[nodiscard]] const ModelEntry* get_for_type(uint16_t type_id) const noexcept;
 
     void unload_all() noexcept;
-
-private:
     void init_procedural();
 
+private:
     bool convert_assimp(const std::filesystem::path& path,
                         float scale, ModelEntry& out) noexcept;
 

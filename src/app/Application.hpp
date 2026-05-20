@@ -52,6 +52,9 @@ private:
     // Called for both live and demo paths — converts EntityState to ECS.
     void apply_state_to_ecs(net::EntityState& state);
 
+    // Syncs ECS entities to the selected playback timestamp using TelemetryStore
+    void sync_ecs_to_playback(uint64_t target_ns);
+
     // Lazy-set scene origin from first received position; converts subsequent
     // lat/lon/alt to ENU metres and fills state.position[].
     // For demo states (position already ENU), pass enu_already=true.

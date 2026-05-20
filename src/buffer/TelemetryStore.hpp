@@ -105,6 +105,60 @@ public:
         slot.entities     = states; // copy — fast for small entity counts
         ++write_idx_;
         if (count_ < kMaxSnapshots) ++count_;
+
+        // Update per-entity histories
+        for (const auto& es : states) {
+            uint64_t key = (static_cast<uint64_t>(es.source_id) << 32) | es.entity_id;
+            auto& hist = entity_histories_[key];
+            hist.push_back(es);
+            if (hist.size() > kMaxSnapshots) {
+                hist.erase(hist.begin());
+            }
+        }
+    }
+
+    // Reset the store, clearing all snapshots, indexes, and histories.
+    void clear() {
+        std::unique_lock lock(mu_);
+        ring_ = {};
+        write_idx_ = 0;
+        count_ = 0;
+        last_snapshot_ns_ = 0;
+        entity_histories_.clear();
+    }
+
+    // Rebuild the histories map after loading a session file.
+    void rebuild_entity_histories() {
+        std::unique_lock lock(mu_);
+        entity_histories_.clear();
+        uint32_t start = (count_ < kMaxSnapshots) ? 0 : (write_idx_ % kMaxSnapshots);
+        for (uint32_t i = 0; i < count_; ++i) {
+            const auto& s = ring_[(start + i) % kMaxSnapshots];
+            for (const auto& es : s.entities) {
+                uint64_t key = (static_cast<uint64_t>(es.source_id) << 32) | es.entity_id;
+                entity_histories_[key].push_back(es);
+            }
+        }
+    }
+
+    // Retrieve the entire historical path of a specific entity.
+    [[nodiscard]] const std::vector<net::EntityState>* get_entity_history(uint32_t source_id, uint32_t entity_id) const {
+        std::shared_lock lock(mu_);
+        uint64_t key = (static_cast<uint64_t>(source_id) << 32) | entity_id;
+        auto it = entity_histories_.find(key);
+        if (it != entity_histories_.end())
+            return &it->second;
+        return nullptr;
+    }
+
+    // Get all unique keys in entity_histories_
+    [[nodiscard]] std::vector<uint64_t> get_all_entity_keys() const {
+        std::shared_lock lock(mu_);
+        std::vector<uint64_t> keys;
+        keys.reserve(entity_histories_.size());
+        for (const auto& [k, v] : entity_histories_)
+            keys.push_back(k);
+        return keys;
     }
 
     // Returns a copy of the last `seconds` worth of snapshots.
@@ -177,6 +231,7 @@ private:
     uint32_t write_idx_       = 0;
     uint32_t count_           = 0;
     uint64_t last_snapshot_ns_= 0;
+    std::unordered_map<uint64_t, std::vector<net::EntityState>> entity_histories_;
 };
 
 } // namespace debrief

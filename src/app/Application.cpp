@@ -94,7 +94,9 @@ void Application::init_ecs() {
 }
 
 void Application::init_assets() {
-    // Procedural shapes are created in AssetManager constructor.
+    // Create detailed procedural composite models now that InitWindow() has initialized the GPU context
+    assets_.init_procedural();
+
     // To load custom models:
     //   assets_.load("my_jet", "assets/models/jet.glb", 0.01f);
     //   assets_.map_type(net::TYPE_JET, "my_jet");
@@ -296,13 +298,138 @@ void Application::apply_state_to_ecs(net::EntityState& state) {
     e.get_mut<ecs::HistoryComp>().hist.push(kf);
 }
 
+void Application::sync_ecs_to_playback(uint64_t target_ns) {
+    // Get all unique entities in store_
+    std::vector<uint64_t> keys = store_.get_all_entity_keys();
+
+    for (uint64_t key : keys) {
+        uint32_t source_id = static_cast<uint32_t>(key >> 32);
+        uint32_t entity_id = static_cast<uint32_t>(key & 0xFFFFFFFF);
+
+        const std::vector<net::EntityState>* hist = store_.get_entity_history(source_id, entity_id);
+        if (!hist || hist->empty()) continue;
+
+        // Find floor and ceiling brackets
+        auto it_hi = std::lower_bound(hist->begin(), hist->end(), target_ns,
+            [](const net::EntityState& es, uint64_t ts) {
+                return es.timestamp_ns < ts;
+            });
+
+        // Outside active lifetime check (if target_ns is before first keyframe or after last keyframe + 2.0s)
+        const auto& first_kf = hist->front();
+        const auto& last_kf = hist->back();
+        
+        bool active = true;
+        if (target_ns < first_kf.timestamp_ns || target_ns > last_kf.timestamp_ns + 2'000'000'000ULL) {
+            active = false;
+        }
+
+        // Get or create the ECS entity using the closest keyframe for metadata
+        net::EntityState state_to_use = (it_hi == hist->end()) ? last_kf : *it_hi;
+        state_to_use.timestamp_ns = target_ns;
+
+        flecs::entity e = get_or_create_entity(state_to_use);
+        auto& meta = e.get_mut<ecs::EntityMeta>();
+
+        if (!active || state_to_use.destroyed || state_to_use.health == 0) {
+            meta.active = false;
+            continue;
+        }
+        meta.active = true;
+
+        // Perform interpolation
+        Vector3 pos{};
+        Quaternion rot{};
+        Vector3 vel{};
+
+        if (it_hi == hist->begin()) {
+            const auto& k = *it_hi;
+            pos = { k.position[0], k.position[1], k.position[2] };
+            rot = { k.orientation[0], k.orientation[1], k.orientation[2], k.orientation[3] };
+            vel = { k.velocity[0], k.velocity[1], k.velocity[2] };
+        } else if (it_hi == hist->end()) {
+            const auto& k = last_kf;
+            pos = { k.position[0], k.position[1], k.position[2] };
+            rot = { k.orientation[0], k.orientation[1], k.orientation[2], k.orientation[3] };
+            vel = { k.velocity[0], k.velocity[1], k.velocity[2] };
+        } else {
+            const auto& khi = *it_hi;
+            const auto& klo = *(it_hi - 1);
+
+            float alpha = 0.0f;
+            float dt_sec = 0.0f;
+            if (khi.timestamp_ns > klo.timestamp_ns) {
+                dt_sec = static_cast<float>(khi.timestamp_ns - klo.timestamp_ns) * 1e-9f;
+                alpha  = static_cast<float>(target_ns - klo.timestamp_ns) /
+                         static_cast<float>(khi.timestamp_ns - klo.timestamp_ns);
+                alpha  = std::clamp(alpha, 0.0f, 1.0f);
+            }
+
+            Vector3 p0{klo.position[0], klo.position[1], klo.position[2]};
+            Vector3 v0{klo.velocity[0],  klo.velocity[1],  klo.velocity[2]};
+            Vector3 p1{khi.position[0], khi.position[1], khi.position[2]};
+            Vector3 v1{khi.velocity[0],  khi.velocity[1],  khi.velocity[2]};
+
+            Quaternion q0{klo.orientation[0], klo.orientation[1], klo.orientation[2], klo.orientation[3]};
+            Quaternion q1{khi.orientation[0], khi.orientation[1], khi.orientation[2], khi.orientation[3]};
+
+            // Hermite position interpolation
+            const float t2 = alpha * alpha, t3 = t2 * alpha;
+            const float h00 =  2*t3 - 3*t2 + 1;
+            const float h10 =    t3 - 2*t2 + alpha;
+            const float h01 = -2*t3 + 3*t2;
+            const float h11 =    t3 -   t2;
+            pos = {
+                h00*p0.x + h10*(v0.x*dt_sec) + h01*p1.x + h11*(v1.x*dt_sec),
+                h00*p0.y + h10*(v0.y*dt_sec) + h01*p1.y + h11*(v1.y*dt_sec),
+                h00*p0.z + h10*(v0.z*dt_sec) + h01*p1.z + h11*(v1.z*dt_sec),
+            };
+
+            rot = QuaternionSlerp(q0, q1, alpha);
+            vel = Vector3Lerp(v0, v1, alpha);
+        }
+
+        // Set ECS components directly
+        e.set<ecs::Position>({pos});
+        e.set<ecs::Rotation>({rot});
+        e.set<ecs::Velocity>({vel});
+
+        // Dynamic Trail Generation from history up to target_ns
+        auto& trail = e.get_mut<ecs::Trail>();
+        trail.head = 0;
+        trail.count = 0;
+        trail.points = {};
+
+        // Find how many points are before target_ns in hist
+        size_t last_idx = std::distance(hist->begin(), it_hi);
+        
+        // We will sample up to kMaxPoints points from hist[0...last_idx]
+        if (last_idx > 0) {
+            size_t start_idx = 0;
+            if (last_idx > ecs::Trail::kMaxPoints) {
+                start_idx = last_idx - ecs::Trail::kMaxPoints;
+            }
+
+            for (size_t idx = start_idx; idx < last_idx; ++idx) {
+                const auto& frame = (*hist)[idx];
+                trail.push({frame.position[0], frame.position[1], frame.position[2]});
+            }
+        }
+        
+        // Push current pos as trail tip
+        trail.push(pos);
+    }
+}
+
 // ── ECS tick ──────────────────────────────────────────────────────────────────
 void Application::update_ecs(float dt) {
     playback_.tick(dt);
     auto [ts, te] = store_.time_range_ns();
     if (ts) playback_.clamp(ts, te);
-    if (!playback_.is_live())
+    if (!playback_.is_live()) {
+        sync_ecs_to_playback(playback_.current_time_ns());
         world_.set<ecs::InterpolationCtx>({playback_.current_time_ns(), false});
+    }
     world_.progress(dt);
 
     // Camera follow
@@ -357,8 +484,26 @@ void Application::render_3d() {
                             {rm.scale, rm.scale, rm.scale}, rm.tint);
 
             // Selection ring
-            if (ui_.state().selected_entity == e)
+            if (ui_.state().selected_entity == e) {
                 DrawSphereWires(pos.v, 60.0f, 6, 6, YELLOW);
+                
+                // Tactical range rings directly on the ground plane under the selected entity
+                DrawCircle3D({pos.v.x, 0.1f, pos.v.z}, 300.0f, {1, 0, 0}, 90.0f, {255, 220, 0, 150});
+                DrawCircle3D({pos.v.x, 0.1f, pos.v.z}, 600.0f, {1, 0, 0}, 90.0f, {255, 220, 0, 75});
+                DrawCircle3D({pos.v.x, 0.1f, pos.v.z}, 900.0f, {1, 0, 0}, 90.0f, {255, 220, 0, 30});
+            }
+
+            // Altitude projection lines for airborne units
+            if (pos.v.y > 2.0f && (meta.type == net::TYPE_JET || meta.type == net::TYPE_MISSILE || meta.type == net::TYPE_HELO)) {
+                // Draw dashed vertical line to the ground
+                float step = 150.0f;
+                for (float h = 0.0f; h < pos.v.y; h += step * 2.0f) {
+                    float h_end = std::min(h + step, pos.v.y);
+                    DrawLine3D({pos.v.x, h, pos.v.z}, {pos.v.x, h_end, pos.v.z}, {0, 190, 255, 140});
+                }
+                // Draw ground projection circle
+                DrawCircle3D({pos.v.x, 0.1f, pos.v.z}, 80.0f, {1, 0, 0}, 90.0f, {0, 190, 255, 120});
+            }
 
             // Velocity vector (5-second look-ahead)
             if (ui_.state().show_velocity_vec) {

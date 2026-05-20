@@ -39,6 +39,8 @@ void register_systems(flecs::world& world) {
         .run([](flecs::iter& it) {
             // Singleton accessed once per system run, before iterating tables
             const auto& ctx = it.world().get<InterpolationCtx>();
+            if (!ctx.live_mode) return; // Skip in playback/VCR mode — sync_ecs_to_playback handles this
+
             const uint64_t target_ns = ctx.playback_time_ns;
 
             while (it.next()) {
@@ -84,6 +86,9 @@ void register_systems(flecs::world& world) {
     world.system<Position, Trail>("TrailUpdateSystem")
         .kind(flecs::OnUpdate)
         .run([](flecs::iter& it) {
+            const auto& interp_ctx = it.world().get<InterpolationCtx>();
+            if (!interp_ctx.live_mode) return; // Skip in playback/VCR mode — sync_ecs_to_playback handles this
+
             const auto& ctx = it.world().get<TrailCtx>();
             const float min_dist_sq = ctx.sample_distance_sq;
 
