@@ -377,7 +377,18 @@ void DebriefUI::draw_entity_list(const flecs::world& world)
             ImGui::SetNextItemWidth(-1);
             ImGui::SliderFloat("##Scale", &state_.entity_3d_scale, 1.0f, 150.0f, "Entities: %.0fx");
             ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##AltExag", &state_.altitude_exaggerate, 1.0f, 20.0f, "Alt Exag: %.1fx");
+            ImGui::SetNextItemWidth(-1);
             ImGui::SliderFloat("##TWidth", &state_.trail_width_override, 5.0f, 500.0f, "Trail W: %.0fm");
+
+            ImGui::Spacing();
+            if (ImGui::Button("Zoom In", ImVec2(ImGui::GetContentRegionAvail().x * 0.5f - 2, 0))) {
+                state_.camera_distance = std::max(30.0f, state_.camera_distance * 0.7f);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Zoom Out", ImVec2(ImGui::GetContentRegionAvail().x, 0))) {
+                state_.camera_distance = std::min(80000.0f, state_.camera_distance * 1.4f);
+            }
 
             ImGui::Separator();
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.75f, 1.0f, 1.0f));

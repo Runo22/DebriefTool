@@ -63,6 +63,9 @@ struct UIState {
     float chase_yaw_offset   =   0.0f;    // degrees, lateral swing around entity
     float chase_pitch_offset =  20.0f;    // degrees, 0=dead-behind, +ve=look down from above
 
+    // Altitude exaggeration: multiplies entity Y for rendering to make height differences visible
+    float altitude_exaggerate = 3.0f;     // 1 = real scale, 3 = 3x vertical stretch
+
     // Terrain settings
     bool  terrain_solid = true;
     bool  terrain_wireframe = true;

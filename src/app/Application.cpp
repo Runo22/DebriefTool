@@ -105,12 +105,24 @@ void Application::init_assets() {
 }
 
 void Application::init_camera() {
-    camera_.position   = { 0.0f, 1000.0f, 2000.0f };
-    camera_.target     = { 0.0f, 0.0f, 0.0f };
-    camera_.up         = { 0.0f, 1.0f, 0.0f };
-    camera_.fovy       = 45.0f;
+    // Entities in demo orbit at 3000-5500m altitude, 5-8km radius.
+    // Start with a side-angle view that clearly shows altitude differences.
+    camera_.position   = { 0.0f, 5000.0f, 12000.0f };
+    camera_.target     = { 0.0f, 3000.0f, 0.0f };   // look at entity centroid
+    camera_.up         = { 0.0f, 1.0f,   0.0f };
+    camera_.fovy       = 60.0f;
     camera_.projection = CAMERA_PERSPECTIVE;
-    camera_free_target_ = { 0.0f, 0.0f, 0.0f };
+    camera_free_target_ = { 0.0f, 3000.0f, 0.0f };
+
+    // Sync UIState to match initial position
+    ui_.state().camera_yaw      = 0.0f;
+    ui_.state().camera_pitch    = 22.0f;   // angled to show height
+    ui_.state().camera_distance = 12000.0f;
+    ui_.state().entity_3d_scale = 30.0f;
+    ui_.state().trail_width_override = 120.0f;
+    ui_.state().terrain_solid   = true;
+    ui_.state().terrain_wireframe = true;
+    ui_.state().altitude_exaggerate = 3.0f;  // 3x vertical exaggeration
 }
 
 void Application::init_ui_callbacks() {
@@ -467,15 +479,35 @@ void Application::render() {
 }
 
 void Application::render_3d() {
+    // Extend far clip plane to 500 km — Raylib default is only 1000 m which
+    // clips everything beyond 1 km and makes the scene appear completely black.
+    rlSetClipPlanes(1.0f, 500000.0f);
     BeginMode3D(camera_);
 
-    // 1. Draw procedural undulating tactical terrain background or grid
+    const float exag = ui_.state().altitude_exaggerate;
+
+    // Helper: apply altitude exaggeration to a world-space position
+    auto exag_pos = [&](Vector3 p) -> Vector3 {
+        return { p.x, p.y * exag, p.z };
+    };
+
+    // 1. Terrain (drawn at real scale — it's already near ground level)
     if (ui_.state().terrain_solid || ui_.state().terrain_wireframe) {
         draw_terrain();
     } else {
-        DrawGrid(200, 500.0f);
+        // Fallback tactical grid
+        rlBegin(RL_LINES);
+        rlColor4ub(0, 80, 150, 50);
+        for (int i = -50; i <= 50; i += 5) {
+            rlVertex3f((float)i * 1000.f, 0.f, -50000.f);
+            rlVertex3f((float)i * 1000.f, 0.f,  50000.f);
+            rlVertex3f(-50000.f, 0.f, (float)i * 1000.f);
+            rlVertex3f( 50000.f, 0.f, (float)i * 1000.f);
+        }
+        rlEnd();
     }
 
+    // 2. Entities
     world_.query<const ecs::EntityMeta,
                   const ecs::Position,
                   const ecs::Rotation,
@@ -492,94 +524,103 @@ void Application::render_3d() {
         {
             if (!meta.active) return;
 
-            // Compose base model rotation with entity world rotation
-            Quaternion q = rm.model_ptr
-                ? QuaternionMultiply(rot.q, rm.base_rot)
-                : rot.q;
+            // Apply altitude exaggeration to render position
+            Vector3 rp = exag_pos(pos.v);  // rendered position (exaggerated Y)
 
+            Quaternion q = rm.model_ptr
+                ? QuaternionMultiply(rot.q, rm.base_rot) : rot.q;
             Vector3 axis{ 0, 1, 0 };
             float angle_rad = 0.0f;
             QuaternionToAxisAngle(q, &axis, &angle_rad);
 
-            // Apply dynamic 3D scale slider so entities are highly visible in the wide visualizer
             float final_scale = rm.scale * ui_.state().entity_3d_scale;
             if (rm.model_ptr) {
-                DrawModelEx(*rm.model_ptr, pos.v,
+                DrawModelEx(*rm.model_ptr, rp,
                             axis, angle_rad * RAD2DEG,
                             {final_scale, final_scale, final_scale}, rm.tint);
+                DrawModelWiresEx(*rm.model_ptr, rp,
+                                 axis, angle_rad * RAD2DEG,
+                                 {final_scale, final_scale, final_scale},
+                                 ColorAlpha(rm.tint, 0.35f));
             } else {
-                // If no FBX model exists, render a bright cyan 3D pyramid marker
-                DrawCylinder(pos.v, 0.0f, 15.0f * ui_.state().entity_3d_scale, 30.0f * ui_.state().entity_3d_scale, 4, {0, 220, 255, 255});
-                DrawCylinderWires(pos.v, 0.0f, 15.0f * ui_.state().entity_3d_scale, 30.0f * ui_.state().entity_3d_scale, 4, {200, 240, 255, 200});
+                float sz = 60.0f * ui_.state().entity_3d_scale;
+                DrawCylinder(rp, 0.0f, sz, sz * 1.5f, 4, {0, 220, 255, 255});
+                DrawCylinderWires(rp, 0.0f, sz, sz * 1.5f, 4, {200, 240, 255, 200});
             }
 
-            // Selection tracker - Draw rotating cyber-command octahedron above and concentric target rings below
+            // Selection highlight (using exaggerated position rp)
             if (ui_.state().selected_entity == e) {
-                DrawSphereWires(pos.v, 60.0f * (ui_.state().entity_3d_scale * 0.15f), 6, 6, YELLOW);
-                
-                float time_sec = GetTime();
-                float bob = sinf(time_sec * 4.0f) * 12.0f;
-                float scale = ui_.state().entity_3d_scale;
-                
-                // Bobbing 3D octahedron tracking diamond
-                Vector3 diamond_pos = {pos.v.x, pos.v.y + (100.0f * (scale * 0.12f)) + bob, pos.v.z};
-                DrawCylinderWires(diamond_pos, 0.0f, 25.0f * (scale * 0.12f), 35.0f * (scale * 0.12f), 4, YELLOW);
-                DrawCylinderWires({diamond_pos.x, diamond_pos.y - 35.0f * (scale * 0.12f), diamond_pos.z}, 25.0f * (scale * 0.12f), 0.0f, 35.0f * (scale * 0.12f), 4, YELLOW);
-                
-                // Tactical range rings directly on the ground plane under the selected entity
-                DrawCircle3D({pos.v.x, 0.2f, pos.v.z}, 400.0f, {1, 0, 0}, 90.0f, {255, 220, 0, 150});
-                DrawCircle3D({pos.v.x, 0.2f, pos.v.z}, 800.0f, {1, 0, 0}, 90.0f, {255, 220, 0, 75});
-                DrawCircle3D({pos.v.x, 0.2f, pos.v.z}, 1200.0f, {1, 0, 0}, 90.0f, {255, 220, 0, 30});
+                float sc    = ui_.state().entity_3d_scale;
+                float sel_r = 180.0f * sc * 0.05f;
+                DrawSphereWires(rp, sel_r, 8, 8, YELLOW);
+                float bob  = sinf((float)GetTime() * 3.0f) * sel_r * 0.3f;
+                Vector3 dp = {rp.x, rp.y + sel_r * 2.5f + bob, rp.z};
+                float ds   = sel_r * 0.6f;
+                DrawCylinderWires(dp, 0.f, ds, ds*1.4f, 4, YELLOW);
+                DrawCylinderWires({dp.x, dp.y - ds*1.4f, dp.z}, ds, 0.f, ds*1.4f, 4, YELLOW);
+                DrawCircle3D({rp.x, 2.f, rp.z}, 600.f,  {1,0,0}, 90.f, {255,220,0,120});
+                DrawCircle3D({rp.x, 2.f, rp.z}, 1200.f, {1,0,0}, 90.f, {255,220,0,60});
+                DrawCircle3D({rp.x, 2.f, rp.z}, 2400.f, {1,0,0}, 90.f, {255,220,0,25});
             }
 
-            // Altitude projection lines for airborne units
-            if (pos.v.y > 2.0f && (meta.type == net::TYPE_JET || meta.type == net::TYPE_MISSILE || meta.type == net::TYPE_HELO)) {
-                // Draw dashed vertical line to the ground
-                float step = 150.0f;
-                for (float h = 0.0f; h < pos.v.y; h += step * 2.0f) {
-                    float h_end = std::min(h + step, pos.v.y);
-                    DrawLine3D({pos.v.x, h, pos.v.z}, {pos.v.x, h_end, pos.v.z}, {0, 190, 255, 140});
-                }
-                // Draw ground projection circle
-                DrawCircle3D({pos.v.x, 0.2f, pos.v.z}, 80.0f * (ui_.state().entity_3d_scale * 0.15f), {1, 0, 0}, 90.0f, {0, 190, 255, 120});
+            // Altitude drop line from ground to exaggerated entity position
+            if (rp.y > 10.0f) {
+                DrawLine3D({rp.x, 2.f, rp.z}, rp, {0, 190, 255, 160});
+                float sr = std::max(50.f, pos.v.y * 0.03f);
+                DrawCircle3D({rp.x, 2.f, rp.z}, sr, {1,0,0}, 90.f, {0, 190, 255, 100});
             }
 
-            // Velocity vector (5-second look-ahead)
+            // Velocity vector (in exaggerated space)
             if (ui_.state().show_velocity_vec) {
-                Vector3 tip = Vector3Add(pos.v, Vector3Scale(vel.v, 5.0f));
-                DrawLine3D(pos.v, tip, GREEN);
+                Vector3 ve  = { vel.v.x, vel.v.y * exag, vel.v.z };
+                Vector3 tip = Vector3Add(rp, Vector3Scale(ve, 5.0f));
+                DrawLine3D(rp, tip, {0, 255, 80, 200});
+                DrawSphere(tip, final_scale * 0.5f, {0, 255, 80, 180});
             }
 
-            // Trail ribbon (applying width override slider)
-            if (ui_.state().show_trails)
-                trails_.draw(trail, camera_, ui_.state().trail_width_override);
+            // Trail — copy ring buffer with exaggerated Y
+            if (ui_.state().show_trails && trail.count >= 2) {
+                ecs::Trail et = trail;
+                for (uint32_t ti = 0; ti < ecs::Trail::kMaxPoints; ++ti)
+                    et.points[ti].y = trail.points[ti].y * exag;
+                trails_.draw(et, camera_, ui_.state().trail_width_override);
+            }
         });
 
     EndMode3D();
+    rlSetClipPlanes(0.01f, 1000.0f);
 
-    // Screen-space labels
+    // Screen-space labels (using exaggerated Y for GetWorldToScreen)
     if (ui_.state().show_labels) {
         world_.query<const ecs::EntityMeta, const ecs::Position>()
-            .each([&](const ecs::EntityMeta& meta, const ecs::Position& pos) {
+            .each([&](flecs::entity fe, const ecs::EntityMeta& meta, const ecs::Position& pos) {
                 if (!meta.active) return;
-                Vector2 sp = GetWorldToScreen(pos.v, camera_);
+                Vector3 rp2 = { pos.v.x, pos.v.y * exag, pos.v.z };
+                Vector2 sp  = GetWorldToScreen(rp2, camera_);
+                if (sp.x < 0 || sp.x > GetScreenWidth() ||
+                    sp.y < 0 || sp.y > GetScreenHeight()) return;
                 const char* lbl = meta.callsign[0]
-                    ? meta.callsign
-                    : TextFormat("#%u", meta.entity_id);
-                DrawText(lbl,
-                         static_cast<int>(sp.x) + 6,
-                         static_cast<int>(sp.y) - 4,
-                         14, {200, 230, 255, 220});
+                    ? meta.callsign : TextFormat("#%u", meta.entity_id);
+                int tx = (int)sp.x + 8, ty = (int)sp.y - 7;
+                DrawText(lbl, tx+1, ty+1, 15, {0,0,0,180});
+                bool sel = (ui_.state().selected_entity == fe);
+                DrawText(lbl, tx, ty, 15,
+                         sel ? Color{255,220,0,255} : Color{180,220,255,230});
+                // Show altitude next to label
+                int alt_ft = (int)(pos.v.y * 3.28084f);
+                if (alt_ft > 50)
+                    DrawText(TextFormat(" %dft", alt_ft), tx, ty+16, 12, {0,200,255,180});
             });
     }
 
-    // Demo mode banner
     if (cfg_.demo_mode) {
-        DrawText("DEMO MODE  —  no UDP input",
-                 GetScreenWidth() / 2 - 160, 8, 20,
-                 {255, 200, 0, 200});
+        int bw = 340, bh = 26, bx = GetScreenWidth()/2 - 170;
+        DrawRectangle(bx, 4, bw, bh, {0,0,0,160});
+        DrawRectangleLines(bx, 4, bw, bh, {255,180,0,100});
+        DrawText("DEMO MODE  \xe2\x80\x94  Live UDP Disabled", bx+10, 9, 15, {255,200,0,230});
     }
 }
+
 
 void Application::render_ui() {
     rlImGuiBegin();
@@ -653,11 +694,16 @@ void Application::draw_terrain() {
     else if (cam_dist > 10000.0f) lod_step = 4;
     else if (cam_dist >  3000.0f) lod_step = 2;
 
-    constexpr int   FULL_GRID = 80;            // 80 columns/rows at step=1
+    constexpr int   FULL_GRID = 80;            // 80 columns/rows at all LODs
     constexpr float BASE_TILE = 1000.0f;       // 1 km base tile
     float tile_sz = BASE_TILE * lod_step;
-    int   grid_n  = FULL_GRID / lod_step;     // tiles per axis at this LOD
-    float start   = -(grid_n * tile_sz) * 0.5f;
+    int   grid_n  = FULL_GRID;                // Number of tiles is constant, so physical width expands with LOD
+
+    // Infinite terrain: center the grid on the camera, snapped to tile size
+    float cam_grid_x = roundf(camera_.position.x / tile_sz) * tile_sz;
+    float cam_grid_z = roundf(camera_.position.z / tile_sz) * tile_sz;
+    float start_x = cam_grid_x - (grid_n * tile_sz) * 0.5f;
+    float start_z = cam_grid_z - (grid_n * tile_sz) * 0.5f;
 
     // Height function (world-space coords)
     auto get_height = [&](float wx, float wz) -> float {
@@ -665,43 +711,18 @@ void Application::draw_terrain() {
                 + 350.0f * sinf(wx * 0.00015f + 0.8f) * sinf(wz * 0.00012f + 1.2f)
                 + 120.0f * cosf(wx * 0.0004f + 2.0f)  * cosf(wz * 0.0003f)
                 +  40.0f * sinf(wx * 0.001f)           * sinf(wz * 0.001f);
-        // Flatten central zone (operational area)
-        float dist = sqrtf(wx*wx + wz*wz);
-        float flat = std::clamp((dist - 4000.0f) / 14000.0f, 0.0f, 1.0f);
-        return h * flat * state.terrain_height_scale;
+        return h * state.terrain_height_scale;
     };
 
-    // Height → color  (dark green → earthy brown → rocky grey → snow white)
+    // Military Space aesthetic
     auto terrain_color = [&](float h) {
         float nh = (state.terrain_height_scale > 0.01f)
-                   ? std::clamp(h / (800.0f * state.terrain_height_scale), 0.0f, 1.0f)
-                   : 0.0f;
-        unsigned char r, g, b;
-        if (nh < 0.25f) {
-            // Deep valley: near-black dark teal
-            float t = nh / 0.25f;
-            r = (unsigned char)(10  + t * 25);
-            g = (unsigned char)(40  + t * 50);
-            b = (unsigned char)(20  + t * 20);
-        } else if (nh < 0.5f) {
-            // Mid slope: forest green
-            float t = (nh - 0.25f) / 0.25f;
-            r = (unsigned char)(35  + t * 70);
-            g = (unsigned char)(90  - t * 20);
-            b = (unsigned char)(40  - t * 10);
-        } else if (nh < 0.75f) {
-            // Upper slope: earthy brown
-            float t = (nh - 0.5f) / 0.25f;
-            r = (unsigned char)(105 + t * 80);
-            g = (unsigned char)(70  + t * 30);
-            b = (unsigned char)(30  + t * 20);
-        } else {
-            // Peak: grey rock
-            float t = (nh - 0.75f) / 0.25f;
-            r = (unsigned char)(185 + t * 50);
-            g = (unsigned char)(100 + t * 55);
-            b = (unsigned char)(50  + t * 60);
-        }
+                   ? std::clamp((h + 1000.0f) / (2000.0f * state.terrain_height_scale), 0.0f, 1.0f)
+                   : 0.5f;
+        // Deep space blue/black base, fading to dark obsidian/slate peaks
+        unsigned char r = (unsigned char)(10 + nh * 15);
+        unsigned char g = (unsigned char)(15 + nh * 20);
+        unsigned char b = (unsigned char)(25 + nh * 30);
         rlColor4ub(r, g, b, 255);
     };
 
@@ -710,8 +731,8 @@ void Application::draw_terrain() {
         rlBegin(RL_QUADS);
         for (int iz = 0; iz < grid_n; ++iz) {
             for (int ix = 0; ix < grid_n; ++ix) {
-                float x0 = start + ix * tile_sz,  z0 = start + iz * tile_sz;
-                float x1 = x0 + tile_sz,          z1 = z0 + tile_sz;
+                float x0 = start_x + ix * tile_sz,  z0 = start_z + iz * tile_sz;
+                float x1 = x0 + tile_sz,            z1 = z0 + tile_sz;
 
                 float h00 = get_height(x0, z0);
                 float h10 = get_height(x1, z0);
@@ -730,24 +751,23 @@ void Application::draw_terrain() {
     }
 
     // ── Grid wireframe — only draw when close enough to see detail ────────────
-    // Fade out grid lines at long range (they become visual noise)
     if (state.terrain_wireframe) {
-        // Compute alpha based on camera distance — fade from 70 → 0 between 8km and 20km
-        float alpha_f = 1.0f - std::clamp((cam_dist - 8000.0f) / 12000.0f, 0.0f, 1.0f);
-        unsigned char grid_alpha = (unsigned char)(alpha_f * 55.0f);
+        float alpha_f = 1.0f - std::clamp((cam_dist - 15000.0f) / 25000.0f, 0.0f, 1.0f);
+        unsigned char grid_alpha = (unsigned char)(alpha_f * 40.0f); // Subtle grid lines
         if (grid_alpha > 2) {
             rlBegin(RL_LINES);
             for (int iz = 0; iz < grid_n; ++iz) {
                 for (int ix = 0; ix < grid_n; ++ix) {
-                    float x0 = start + ix * tile_sz, z0 = start + iz * tile_sz;
-                    float x1 = x0 + tile_sz,          z1 = z0 + tile_sz;
+                    float x0 = start_x + ix * tile_sz, z0 = start_z + iz * tile_sz;
+                    float x1 = x0 + tile_sz,           z1 = z0 + tile_sz;
 
                     float h00 = get_height(x0, z0);
                     float h10 = get_height(x1, z0);
                     float h11 = get_height(x1, z1);
                     float h01 = get_height(x0, z1);
 
-                    rlColor4ub(0, 110, 190, grid_alpha);
+                    // Military space grid: desaturated cyan/grey
+                    rlColor4ub(40, 90, 110, grid_alpha);
                     rlVertex3f(x0, h00 + 2.0f, z0);
                     rlVertex3f(x0, h01 + 2.0f, z1);
 
@@ -840,6 +860,7 @@ void Application::update_camera_state(float dt) {
     if (state.camera_mode == 1 && sel.is_valid() && world_.is_alive(sel)) {
         if (sel.has<ecs::Position>()) {
             Vector3 ent_pos = sel.get<ecs::Position>().v;
+            ent_pos.y *= state.altitude_exaggerate;  // Also apply exaggeration to Focus orbit target
             camera_.target  = ent_pos;
 
             float pitch_rad = state.camera_pitch * DEG2RAD;
@@ -858,6 +879,9 @@ void Application::update_camera_state(float dt) {
             Vector3    ent_pos = sel.get<ecs::Position>().v;
             Quaternion ent_rot = sel.get<ecs::Rotation>().q;
             Vector3    ent_vel = sel.get<ecs::Velocity>().v;
+
+            // CRITICAL: Apply altitude exaggeration so camera tracks the visual model height
+            ent_pos.y *= state.altitude_exaggerate;
 
             // Entity's local axes
             Vector3 fwd = Vector3Normalize(Vector3RotateByQuaternion({0, 0, -1}, ent_rot));
