@@ -216,6 +216,8 @@ bool Recorder::export_slice(const TelemetryStore& store,
 bool Recorder::load_into(const std::filesystem::path& path,
                          TelemetryStore& store) noexcept
 {
+    store.clear();
+
     std::ifstream f(path, std::ios::binary);
     if (!f) return false;
 
@@ -257,6 +259,7 @@ bool Recorder::load_into(const std::filesystem::path& path,
         store.ingest(fh.timestamp_ns, entities);
     }
 
+    store.rebuild_entity_histories();
     return true;
 }
 

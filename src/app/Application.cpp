@@ -4,9 +4,11 @@
 #include <imgui.h>
 #include <implot.h>
 #include <raymath.h>
+#include <rlgl.h>
 #include <cmath>
 #include <cstring>
 #include <ctime>
+#include <algorithm>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -94,18 +96,33 @@ void Application::init_ecs() {
 }
 
 void Application::init_assets() {
-    assets_.init(); // requires InitWindow() to have been called first
+    // Create detailed procedural composite models now that InitWindow() has initialized the GPU context
+    assets_.init_procedural();
+
     // To load custom models:
     //   assets_.load("my_jet", "assets/models/jet.glb", 0.01f);
     //   assets_.map_type(net::TYPE_JET, "my_jet");
 }
 
 void Application::init_camera() {
-    camera_.position   = { 0.0f, 8000.0f, 14000.0f };
-    camera_.target     = { 0.0f, 0.0f, 0.0f };
-    camera_.up         = { 0.0f, 1.0f, 0.0f };
-    camera_.fovy       = 45.0f;
+    // Entities in demo orbit at 3000-5500m altitude, 5-8km radius.
+    // Start with a side-angle view that clearly shows altitude differences.
+    camera_.position   = { 0.0f, 5000.0f, 12000.0f };
+    camera_.target     = { 0.0f, 3000.0f, 0.0f };   // look at entity centroid
+    camera_.up         = { 0.0f, 1.0f,   0.0f };
+    camera_.fovy       = 60.0f;
     camera_.projection = CAMERA_PERSPECTIVE;
+    camera_free_target_ = { 0.0f, 3000.0f, 0.0f };
+
+    // Sync UIState to match initial position
+    ui_.state().camera_yaw      = 0.0f;
+    ui_.state().camera_pitch    = 22.0f;   // angled to show height
+    ui_.state().camera_distance = 12000.0f;
+    ui_.state().entity_3d_scale = 30.0f;
+    ui_.state().trail_width_override = 120.0f;
+    ui_.state().terrain_solid   = true;
+    ui_.state().terrain_wireframe = true;
+    ui_.state().altitude_exaggerate = 3.0f;  // 3x vertical exaggeration
 }
 
 void Application::init_ui_callbacks() {
@@ -160,6 +177,7 @@ void Application::tick(float dt) {
     if (cfg_.demo_mode) process_demo(dt);
     else                process_inbound_queue();
     update_ecs(dt);
+    update_camera_state(dt);
     render();
 }
 
@@ -253,6 +271,19 @@ flecs::entity Application::get_or_create_entity(const net::EntityState& state) {
     rm.scale     = entry->scale;
     rm.base_rot  = entry->base_rot;
 
+    // Per-type trail color for visual identification
+    ecs::Trail trail_init{};
+    trail_init.width = 10.0f;
+    switch (state.entity_type) {
+        case net::TYPE_JET:     trail_init.color = { 80, 160, 255, 200 }; break; // blue
+        case net::TYPE_MISSILE: trail_init.color = { 255, 80,  80, 220 }; break; // red-orange
+        case net::TYPE_AAA:     trail_init.color = { 80, 180,  80, 180 }; break; // green
+        case net::TYPE_GROUND:  trail_init.color = {220, 140,  40, 180 }; break; // amber
+        case net::TYPE_HELO:    trail_init.color = { 80, 220, 100, 200 }; break; // lime
+        case net::TYPE_SHIP:    trail_init.color = {160, 160, 220, 180 }; break; // lavender
+        default:                trail_init.color = {  0, 200, 255, 180 }; break; // cyan
+    }
+
     auto e = world_.entity(ename)
         .set<ecs::EntityMeta>({state.source_id, state.entity_id,
                                state.entity_type,
@@ -261,7 +292,7 @@ flecs::entity Application::get_or_create_entity(const net::EntityState& state) {
         .set<ecs::Rotation>({})
         .set<ecs::Velocity>({})
         .set<ecs::HistoryComp>({})
-        .set<ecs::Trail>({})
+        .set<ecs::Trail>(trail_init)
         .set<ecs::RenderModel>(rm);
 
     auto& meta = e.get_mut<ecs::EntityMeta>();
@@ -296,13 +327,138 @@ void Application::apply_state_to_ecs(net::EntityState& state) {
     e.get_mut<ecs::HistoryComp>().hist.push(kf);
 }
 
+void Application::sync_ecs_to_playback(uint64_t target_ns) {
+    // Get all unique entities in store_
+    std::vector<uint64_t> keys = store_.get_all_entity_keys();
+
+    for (uint64_t key : keys) {
+        uint32_t source_id = static_cast<uint32_t>(key >> 32);
+        uint32_t entity_id = static_cast<uint32_t>(key & 0xFFFFFFFF);
+
+        const std::vector<net::EntityState>* hist = store_.get_entity_history(source_id, entity_id);
+        if (!hist || hist->empty()) continue;
+
+        // Find floor and ceiling brackets
+        auto it_hi = std::lower_bound(hist->begin(), hist->end(), target_ns,
+            [](const net::EntityState& es, uint64_t ts) {
+                return es.timestamp_ns < ts;
+            });
+
+        // Outside active lifetime check (if target_ns is before first keyframe or after last keyframe + 2.0s)
+        const auto& first_kf = hist->front();
+        const auto& last_kf = hist->back();
+        
+        bool active = true;
+        if (target_ns < first_kf.timestamp_ns || target_ns > last_kf.timestamp_ns + 2'000'000'000ULL) {
+            active = false;
+        }
+
+        // Get or create the ECS entity using the closest keyframe for metadata
+        net::EntityState state_to_use = (it_hi == hist->end()) ? last_kf : *it_hi;
+        state_to_use.timestamp_ns = target_ns;
+
+        flecs::entity e = get_or_create_entity(state_to_use);
+        auto& meta = e.get_mut<ecs::EntityMeta>();
+
+        if (!active || state_to_use.destroyed || state_to_use.health == 0) {
+            meta.active = false;
+            continue;
+        }
+        meta.active = true;
+
+        // Perform interpolation
+        Vector3 pos{};
+        Quaternion rot{};
+        Vector3 vel{};
+
+        if (it_hi == hist->begin()) {
+            const auto& k = *it_hi;
+            pos = { k.position[0], k.position[1], k.position[2] };
+            rot = { k.orientation[0], k.orientation[1], k.orientation[2], k.orientation[3] };
+            vel = { k.velocity[0], k.velocity[1], k.velocity[2] };
+        } else if (it_hi == hist->end()) {
+            const auto& k = last_kf;
+            pos = { k.position[0], k.position[1], k.position[2] };
+            rot = { k.orientation[0], k.orientation[1], k.orientation[2], k.orientation[3] };
+            vel = { k.velocity[0], k.velocity[1], k.velocity[2] };
+        } else {
+            const auto& khi = *it_hi;
+            const auto& klo = *(it_hi - 1);
+
+            float alpha = 0.0f;
+            float dt_sec = 0.0f;
+            if (khi.timestamp_ns > klo.timestamp_ns) {
+                dt_sec = static_cast<float>(khi.timestamp_ns - klo.timestamp_ns) * 1e-9f;
+                alpha  = static_cast<float>(target_ns - klo.timestamp_ns) /
+                         static_cast<float>(khi.timestamp_ns - klo.timestamp_ns);
+                alpha  = std::clamp(alpha, 0.0f, 1.0f);
+            }
+
+            Vector3 p0{klo.position[0], klo.position[1], klo.position[2]};
+            Vector3 v0{klo.velocity[0],  klo.velocity[1],  klo.velocity[2]};
+            Vector3 p1{khi.position[0], khi.position[1], khi.position[2]};
+            Vector3 v1{khi.velocity[0],  khi.velocity[1],  khi.velocity[2]};
+
+            Quaternion q0{klo.orientation[0], klo.orientation[1], klo.orientation[2], klo.orientation[3]};
+            Quaternion q1{khi.orientation[0], khi.orientation[1], khi.orientation[2], khi.orientation[3]};
+
+            // Hermite position interpolation
+            const float t2 = alpha * alpha, t3 = t2 * alpha;
+            const float h00 =  2*t3 - 3*t2 + 1;
+            const float h10 =    t3 - 2*t2 + alpha;
+            const float h01 = -2*t3 + 3*t2;
+            const float h11 =    t3 -   t2;
+            pos = {
+                h00*p0.x + h10*(v0.x*dt_sec) + h01*p1.x + h11*(v1.x*dt_sec),
+                h00*p0.y + h10*(v0.y*dt_sec) + h01*p1.y + h11*(v1.y*dt_sec),
+                h00*p0.z + h10*(v0.z*dt_sec) + h01*p1.z + h11*(v1.z*dt_sec),
+            };
+
+            rot = QuaternionSlerp(q0, q1, alpha);
+            vel = Vector3Lerp(v0, v1, alpha);
+        }
+
+        // Set ECS components directly
+        e.set<ecs::Position>({pos});
+        e.set<ecs::Rotation>({rot});
+        e.set<ecs::Velocity>({vel});
+
+        // Dynamic Trail Generation from history up to target_ns
+        auto& trail = e.get_mut<ecs::Trail>();
+        trail.head = 0;
+        trail.count = 0;
+        trail.points = {};
+
+        // Find how many points are before target_ns in hist
+        size_t last_idx = std::distance(hist->begin(), it_hi);
+        
+        // We will sample up to kMaxPoints points from hist[0...last_idx]
+        if (last_idx > 0) {
+            size_t start_idx = 0;
+            if (last_idx > ecs::Trail::kMaxPoints) {
+                start_idx = last_idx - ecs::Trail::kMaxPoints;
+            }
+
+            for (size_t idx = start_idx; idx < last_idx; ++idx) {
+                const auto& frame = (*hist)[idx];
+                trail.push({frame.position[0], frame.position[1], frame.position[2]});
+            }
+        }
+        
+        // Push current pos as trail tip
+        trail.push(pos);
+    }
+}
+
 // ── ECS tick ──────────────────────────────────────────────────────────────────
 void Application::update_ecs(float dt) {
     playback_.tick(dt);
     auto [ts, te] = store_.time_range_ns();
     if (ts) playback_.clamp(ts, te);
-    if (!playback_.is_live())
+    if (!playback_.is_live()) {
+        sync_ecs_to_playback(playback_.current_time_ns());
         world_.set<ecs::InterpolationCtx>({playback_.current_time_ns(), false});
+    }
     world_.progress(dt);
 
     // Camera follow
@@ -323,9 +479,35 @@ void Application::render() {
 }
 
 void Application::render_3d() {
+    // Extend far clip plane to 500 km — Raylib default is only 1000 m which
+    // clips everything beyond 1 km and makes the scene appear completely black.
+    rlSetClipPlanes(1.0f, 500000.0f);
     BeginMode3D(camera_);
-    DrawGrid(200, 500.0f);
 
+    const float exag = ui_.state().altitude_exaggerate;
+
+    // Helper: apply altitude exaggeration to a world-space position
+    auto exag_pos = [&](Vector3 p) -> Vector3 {
+        return { p.x, p.y * exag, p.z };
+    };
+
+    // 1. Terrain (drawn at real scale — it's already near ground level)
+    if (ui_.state().terrain_solid || ui_.state().terrain_wireframe) {
+        draw_terrain();
+    } else {
+        // Fallback tactical grid
+        rlBegin(RL_LINES);
+        rlColor4ub(0, 80, 150, 50);
+        for (int i = -50; i <= 50; i += 5) {
+            rlVertex3f((float)i * 1000.f, 0.f, -50000.f);
+            rlVertex3f((float)i * 1000.f, 0.f,  50000.f);
+            rlVertex3f(-50000.f, 0.f, (float)i * 1000.f);
+            rlVertex3f( 50000.f, 0.f, (float)i * 1000.f);
+        }
+        rlEnd();
+    }
+
+    // 2. Entities
     world_.query<const ecs::EntityMeta,
                   const ecs::Position,
                   const ecs::Rotation,
@@ -342,60 +524,103 @@ void Application::render_3d() {
         {
             if (!meta.active) return;
 
-            // Compose base model rotation with entity world rotation
-            Quaternion q = rm.model_ptr
-                ? QuaternionMultiply(rot.q, rm.base_rot)
-                : rot.q;
+            // Apply altitude exaggeration to render position
+            Vector3 rp = exag_pos(pos.v);  // rendered position (exaggerated Y)
 
+            Quaternion q = rm.model_ptr
+                ? QuaternionMultiply(rot.q, rm.base_rot) : rot.q;
             Vector3 axis{ 0, 1, 0 };
             float angle_rad = 0.0f;
             QuaternionToAxisAngle(q, &axis, &angle_rad);
 
-            if (rm.model_ptr)
-                DrawModelEx(*rm.model_ptr, pos.v,
+            float final_scale = rm.scale * ui_.state().entity_3d_scale;
+            if (rm.model_ptr) {
+                DrawModelEx(*rm.model_ptr, rp,
                             axis, angle_rad * RAD2DEG,
-                            {rm.scale, rm.scale, rm.scale}, rm.tint);
-
-            // Selection ring
-            if (ui_.state().selected_entity == e)
-                DrawSphereWires(pos.v, 60.0f, 6, 6, YELLOW);
-
-            // Velocity vector (5-second look-ahead)
-            if (ui_.state().show_velocity_vec) {
-                Vector3 tip = Vector3Add(pos.v, Vector3Scale(vel.v, 5.0f));
-                DrawLine3D(pos.v, tip, GREEN);
+                            {final_scale, final_scale, final_scale}, rm.tint);
+                DrawModelWiresEx(*rm.model_ptr, rp,
+                                 axis, angle_rad * RAD2DEG,
+                                 {final_scale, final_scale, final_scale},
+                                 ColorAlpha(rm.tint, 0.35f));
+            } else {
+                float sz = 60.0f * ui_.state().entity_3d_scale;
+                DrawCylinder(rp, 0.0f, sz, sz * 1.5f, 4, {0, 220, 255, 255});
+                DrawCylinderWires(rp, 0.0f, sz, sz * 1.5f, 4, {200, 240, 255, 200});
             }
 
-            // Trail
-            if (ui_.state().show_trails)
-                trails_.draw(trail, camera_);
+            // Selection highlight (using exaggerated position rp)
+            if (ui_.state().selected_entity == e) {
+                float sc    = ui_.state().entity_3d_scale;
+                float sel_r = 180.0f * sc * 0.05f;
+                DrawSphereWires(rp, sel_r, 8, 8, YELLOW);
+                float bob  = sinf((float)GetTime() * 3.0f) * sel_r * 0.3f;
+                Vector3 dp = {rp.x, rp.y + sel_r * 2.5f + bob, rp.z};
+                float ds   = sel_r * 0.6f;
+                DrawCylinderWires(dp, 0.f, ds, ds*1.4f, 4, YELLOW);
+                DrawCylinderWires({dp.x, dp.y - ds*1.4f, dp.z}, ds, 0.f, ds*1.4f, 4, YELLOW);
+                DrawCircle3D({rp.x, 2.f, rp.z}, 600.f,  {1,0,0}, 90.f, {255,220,0,120});
+                DrawCircle3D({rp.x, 2.f, rp.z}, 1200.f, {1,0,0}, 90.f, {255,220,0,60});
+                DrawCircle3D({rp.x, 2.f, rp.z}, 2400.f, {1,0,0}, 90.f, {255,220,0,25});
+            }
+
+            // Altitude drop line from ground to exaggerated entity position
+            if (rp.y > 10.0f) {
+                DrawLine3D({rp.x, 2.f, rp.z}, rp, {0, 190, 255, 160});
+                float sr = std::max(50.f, pos.v.y * 0.03f);
+                DrawCircle3D({rp.x, 2.f, rp.z}, sr, {1,0,0}, 90.f, {0, 190, 255, 100});
+            }
+
+            // Velocity vector (in exaggerated space)
+            if (ui_.state().show_velocity_vec) {
+                Vector3 ve  = { vel.v.x, vel.v.y * exag, vel.v.z };
+                Vector3 tip = Vector3Add(rp, Vector3Scale(ve, 5.0f));
+                DrawLine3D(rp, tip, {0, 255, 80, 200});
+                DrawSphere(tip, final_scale * 0.5f, {0, 255, 80, 180});
+            }
+
+            // Trail — copy ring buffer with exaggerated Y
+            if (ui_.state().show_trails && trail.count >= 2) {
+                ecs::Trail et = trail;
+                for (uint32_t ti = 0; ti < ecs::Trail::kMaxPoints; ++ti)
+                    et.points[ti].y = trail.points[ti].y * exag;
+                trails_.draw(et, camera_, ui_.state().trail_width_override);
+            }
         });
 
     EndMode3D();
+    rlSetClipPlanes(0.01f, 1000.0f);
 
-    // Screen-space labels
+    // Screen-space labels (using exaggerated Y for GetWorldToScreen)
     if (ui_.state().show_labels) {
         world_.query<const ecs::EntityMeta, const ecs::Position>()
-            .each([&](const ecs::EntityMeta& meta, const ecs::Position& pos) {
+            .each([&](flecs::entity fe, const ecs::EntityMeta& meta, const ecs::Position& pos) {
                 if (!meta.active) return;
-                Vector2 sp = GetWorldToScreen(pos.v, camera_);
+                Vector3 rp2 = { pos.v.x, pos.v.y * exag, pos.v.z };
+                Vector2 sp  = GetWorldToScreen(rp2, camera_);
+                if (sp.x < 0 || sp.x > GetScreenWidth() ||
+                    sp.y < 0 || sp.y > GetScreenHeight()) return;
                 const char* lbl = meta.callsign[0]
-                    ? meta.callsign
-                    : TextFormat("#%u", meta.entity_id);
-                DrawText(lbl,
-                         static_cast<int>(sp.x) + 6,
-                         static_cast<int>(sp.y) - 4,
-                         14, {200, 230, 255, 220});
+                    ? meta.callsign : TextFormat("#%u", meta.entity_id);
+                int tx = (int)sp.x + 8, ty = (int)sp.y - 7;
+                DrawText(lbl, tx+1, ty+1, 15, {0,0,0,180});
+                bool sel = (ui_.state().selected_entity == fe);
+                DrawText(lbl, tx, ty, 15,
+                         sel ? Color{255,220,0,255} : Color{180,220,255,230});
+                // Show altitude next to label
+                int alt_ft = (int)(pos.v.y * 3.28084f);
+                if (alt_ft > 50)
+                    DrawText(TextFormat(" %dft", alt_ft), tx, ty+16, 12, {0,200,255,180});
             });
     }
 
-    // Demo mode banner
     if (cfg_.demo_mode) {
-        DrawText("DEMO MODE  —  no UDP input",
-                 GetScreenWidth() / 2 - 160, 8, 20,
-                 {255, 200, 0, 200});
+        int bw = 340, bh = 26, bx = GetScreenWidth()/2 - 170;
+        DrawRectangle(bx, 4, bw, bh, {0,0,0,160});
+        DrawRectangleLines(bx, 4, bw, bh, {255,180,0,100});
+        DrawText("DEMO MODE  \xe2\x80\x94  Live UDP Disabled", bx+10, 9, 15, {255,200,0,230});
     }
 }
+
 
 void Application::render_ui() {
     rlImGuiBegin();
@@ -407,20 +632,9 @@ void Application::render_ui() {
 void Application::handle_input(float /*dt*/) {
     if (IsKeyPressed(KEY_ESCAPE)) running_ = false;
 
-    if (!ImGui::GetIO().WantCaptureMouse)
-        UpdateCamera(&camera_, CAMERA_ORBITAL);
-
     if (IsKeyPressed(KEY_SPACE)) {
         if (playback_.state() == PlaybackState::Playing) playback_.pause();
         else                                              playback_.play();
-    }
-
-    if (IsKeyPressed(KEY_F) && ui_.state().selected_entity.is_valid()) {
-        auto se = ui_.state().selected_entity;
-        if (world_.is_alive(se)) {
-            if (se.has<ecs::CameraTarget>()) se.remove<ecs::CameraTarget>();
-            else                              se.add<ecs::CameraTarget>();
-        }
     }
 
     if (IsKeyPressed(KEY_R)) {
@@ -433,6 +647,315 @@ void Application::handle_input(float /*dt*/) {
     if (IsKeyPressed(KEY_TWO))   playback_.set_speed(1.0f);
     if (IsKeyPressed(KEY_THREE)) playback_.set_speed(4.0f);
     if (IsKeyPressed(KEY_FOUR))  playback_.set_speed(-1.0f);
+
+    // ── Left-click entity selection in 3D viewport ────────────────────────────
+    // Only when ImGui is not capturing the mouse
+    if (!ImGui::GetIO().WantCaptureMouse && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        Ray ray = GetMouseRay(GetMousePosition(), camera_);
+        float best_dist = 1e10f;
+        flecs::entity best_ent{};
+
+        world_.query<const ecs::EntityMeta, const ecs::Position>()
+            .each([&](flecs::entity e, const ecs::EntityMeta& meta, const ecs::Position& pos) {
+                if (!meta.active) return;
+                // Hit-test against a screen-space sphere whose radius scales with camera distance
+                float pick_r = ui_.state().entity_3d_scale * 30.0f;
+                Vector3 to_center = Vector3Subtract(pos.v, ray.position);
+                float t = Vector3DotProduct(to_center, ray.direction);
+                if (t < 0) return;
+                Vector3 closest = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
+                float dist = Vector3Length(Vector3Subtract(closest, pos.v));
+                if (dist < pick_r && t < best_dist) {
+                    best_dist = t;
+                    best_ent  = e;
+                }
+            });
+
+        if (best_ent.is_valid()) {
+            // Toggle selection
+            ui_.state().selected_entity = (ui_.state().selected_entity == best_ent)
+                ? flecs::entity{} : best_ent;
+        }
+    }
+}
+
+void Application::draw_terrain() {
+    auto& state = ui_.state();
+    if (!state.terrain_solid && !state.terrain_wireframe) return;
+
+    // ── LOD: adapt grid resolution to camera distance ─────────────────────────
+    // Close  (<3km):  step=1 → 80x80 tiles @ 1km  (full detail)
+    // Medium (3-10km): step=2 → 40x40 tiles @ 2km
+    // Far   (10-25km): step=4 → 20x20 tiles @ 4km
+    // Very far (>25km): step=8 → 10x10 tiles @ 8km (coarse silhouette)
+    const float cam_dist = state.camera_distance;
+    int lod_step = 1;
+    if      (cam_dist > 25000.0f) lod_step = 8;
+    else if (cam_dist > 10000.0f) lod_step = 4;
+    else if (cam_dist >  3000.0f) lod_step = 2;
+
+    constexpr int   FULL_GRID = 80;            // 80 columns/rows at all LODs
+    constexpr float BASE_TILE = 1000.0f;       // 1 km base tile
+    float tile_sz = BASE_TILE * lod_step;
+    int   grid_n  = FULL_GRID;                // Number of tiles is constant, so physical width expands with LOD
+
+    // Infinite terrain: center the grid on the camera, snapped to tile size
+    float cam_grid_x = roundf(camera_.position.x / tile_sz) * tile_sz;
+    float cam_grid_z = roundf(camera_.position.z / tile_sz) * tile_sz;
+    float start_x = cam_grid_x - (grid_n * tile_sz) * 0.5f;
+    float start_z = cam_grid_z - (grid_n * tile_sz) * 0.5f;
+
+    // Height function (world-space coords)
+    auto get_height = [&](float wx, float wz) -> float {
+        float h = 800.0f * sinf(wx * 0.00006f) * cosf(wz * 0.00006f)
+                + 350.0f * sinf(wx * 0.00015f + 0.8f) * sinf(wz * 0.00012f + 1.2f)
+                + 120.0f * cosf(wx * 0.0004f + 2.0f)  * cosf(wz * 0.0003f)
+                +  40.0f * sinf(wx * 0.001f)           * sinf(wz * 0.001f);
+        return h * state.terrain_height_scale;
+    };
+
+    // Military Space aesthetic
+    auto terrain_color = [&](float h) {
+        float nh = (state.terrain_height_scale > 0.01f)
+                   ? std::clamp((h + 1000.0f) / (2000.0f * state.terrain_height_scale), 0.0f, 1.0f)
+                   : 0.5f;
+        // Deep space blue/black base, fading to dark obsidian/slate peaks
+        unsigned char r = (unsigned char)(10 + nh * 15);
+        unsigned char g = (unsigned char)(15 + nh * 20);
+        unsigned char b = (unsigned char)(25 + nh * 30);
+        rlColor4ub(r, g, b, 255);
+    };
+
+    // ── Solid terrain ─────────────────────────────────────────────────────────
+    if (state.terrain_solid) {
+        rlBegin(RL_QUADS);
+        for (int iz = 0; iz < grid_n; ++iz) {
+            for (int ix = 0; ix < grid_n; ++ix) {
+                float x0 = start_x + ix * tile_sz,  z0 = start_z + iz * tile_sz;
+                float x1 = x0 + tile_sz,            z1 = z0 + tile_sz;
+
+                float h00 = get_height(x0, z0);
+                float h10 = get_height(x1, z0);
+                float h11 = get_height(x1, z1);
+                float h01 = get_height(x0, z1);
+                float havg = (h00 + h10 + h11 + h01) * 0.25f;
+
+                terrain_color(havg);
+                rlVertex3f(x0, h00, z0);
+                rlVertex3f(x0, h01, z1);
+                rlVertex3f(x1, h11, z1);
+                rlVertex3f(x1, h10, z0);
+            }
+        }
+        rlEnd();
+    }
+
+    // ── Grid wireframe — only draw when close enough to see detail ────────────
+    if (state.terrain_wireframe) {
+        float alpha_f = 1.0f - std::clamp((cam_dist - 15000.0f) / 25000.0f, 0.0f, 1.0f);
+        unsigned char grid_alpha = (unsigned char)(alpha_f * 40.0f); // Subtle grid lines
+        if (grid_alpha > 2) {
+            rlBegin(RL_LINES);
+            for (int iz = 0; iz < grid_n; ++iz) {
+                for (int ix = 0; ix < grid_n; ++ix) {
+                    float x0 = start_x + ix * tile_sz, z0 = start_z + iz * tile_sz;
+                    float x1 = x0 + tile_sz,           z1 = z0 + tile_sz;
+
+                    float h00 = get_height(x0, z0);
+                    float h10 = get_height(x1, z0);
+                    float h11 = get_height(x1, z1);
+                    float h01 = get_height(x0, z1);
+
+                    // Military space grid: desaturated cyan/grey
+                    rlColor4ub(40, 90, 110, grid_alpha);
+                    rlVertex3f(x0, h00 + 2.0f, z0);
+                    rlVertex3f(x0, h01 + 2.0f, z1);
+
+                    rlVertex3f(x0, h00 + 2.0f, z0);
+                    rlVertex3f(x1, h10 + 2.0f, z0);
+
+                    rlVertex3f(x0, h01 + 2.0f, z1);
+                    rlVertex3f(x1, h11 + 2.0f, z1);
+
+                    rlVertex3f(x1, h10 + 2.0f, z0);
+                    rlVertex3f(x1, h11 + 2.0f, z1);
+                }
+            }
+            rlEnd();
+        }
+    }
+}
+
+void Application::update_camera_state(float dt) {
+    auto& state = ui_.state();
+    const bool ui_wants_mouse = ImGui::GetIO().WantCaptureMouse;
+
+    // ── Scroll wheel: zoom ────────────────────────────────────────────────────
+    if (!ui_wants_mouse) {
+        float wheel = GetMouseWheelMove();
+        if (wheel != 0.0f) {
+            // Exponential zoom — faster when far, slower when close
+            state.camera_distance *= powf(0.88f, wheel);
+            state.camera_distance  = std::clamp(state.camera_distance, 30.0f, 80000.0f);
+        }
+    }
+
+    // ── RMB: orbit / rotate in Free and Focus modes ──────────────────────────
+    // In Chase mode, RMB adjusts chase yaw offset instead
+    if (!ui_wants_mouse && IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+        Vector2 delta = GetMouseDelta();
+        // Sensitivity scales slightly with zoom so distant orbit feels right
+        float sens = 0.20f + 0.05f * std::clamp(state.camera_distance / 20000.0f, 0.0f, 1.5f);
+        if (state.camera_mode == 2) {
+            // In chase mode — adjust lateral yaw offset around entity
+            state.chase_yaw_offset   += delta.x * 0.3f;
+            state.chase_pitch_offset -= delta.y * 0.2f;
+            state.chase_pitch_offset  = std::clamp(state.chase_pitch_offset, -30.0f, 60.0f);
+        } else {
+            state.camera_yaw   += delta.x * sens;
+            state.camera_pitch -= delta.y * sens;
+            state.camera_pitch  = std::clamp(state.camera_pitch, -89.0f, 89.0f);
+        }
+    }
+
+    // ── MMB: pan the camera target ───────────────────────────────────────────
+    // Feels natural in any CAD/3D tool — drag the ground plane under the cursor
+    if (!ui_wants_mouse && IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)
+        && state.camera_mode == 0) {
+        Vector2 delta = GetMouseDelta();
+        float yaw_rad = state.camera_yaw * DEG2RAD;
+        Vector3 cam_right   = { cosf(yaw_rad), 0.0f, -sinf(yaw_rad) };
+        Vector3 cam_forward = { sinf(yaw_rad), 0.0f,  cosf(yaw_rad) };
+        // Pan speed proportional to distance so it feels 1:1 with the scene
+        float pan_scale = state.camera_distance * 0.0012f;
+        camera_free_target_ = Vector3Subtract(camera_free_target_,
+            Vector3Scale(cam_right,   delta.x * pan_scale));
+        camera_free_target_ = Vector3Add(camera_free_target_,
+            Vector3Scale(cam_forward, delta.y * pan_scale));
+    }
+
+    // ── F key: toggle focus on selected entity ────────────────────────────────
+    flecs::entity sel = state.selected_entity;
+    if (IsKeyPressed(KEY_F) && sel.is_valid() && world_.is_alive(sel)) {
+        if (state.camera_mode >= 1) {
+            // Return to free orbit, pivot point on where entity was
+            state.camera_mode = 0;
+            if (sel.has<ecs::Position>())
+                camera_free_target_ = sel.get<ecs::Position>().v;
+        } else {
+            state.camera_mode = 1;
+        }
+    }
+
+    // ── G key: toggle chase cam ───────────────────────────────────────────────
+    if (IsKeyPressed(KEY_G) && sel.is_valid() && world_.is_alive(sel)) {
+        state.camera_mode = (state.camera_mode == 2) ? 0 : 2;
+        if (state.camera_mode == 2) {
+            state.chase_yaw_offset   = 0.0f;
+            state.chase_pitch_offset = 20.0f;  // default: slightly above-behind
+        }
+    }
+
+    // ── MODE 1: Focus Orbit — orbit around selected entity ────────────────────
+    if (state.camera_mode == 1 && sel.is_valid() && world_.is_alive(sel)) {
+        if (sel.has<ecs::Position>()) {
+            Vector3 ent_pos = sel.get<ecs::Position>().v;
+            ent_pos.y *= state.altitude_exaggerate;  // Also apply exaggeration to Focus orbit target
+            camera_.target  = ent_pos;
+
+            float pitch_rad = state.camera_pitch * DEG2RAD;
+            float yaw_rad   = state.camera_yaw   * DEG2RAD;
+            camera_.position = Vector3Add(ent_pos, {
+                state.camera_distance * cosf(pitch_rad) * sinf(yaw_rad),
+                state.camera_distance * sinf(pitch_rad),
+                state.camera_distance * cosf(pitch_rad) * cosf(yaw_rad)
+            });
+            camera_.up = { 0.0f, 1.0f, 0.0f };
+        }
+    }
+    // ── MODE 2: Chase Camera — fly behind entity, angled down ─────────────────
+    else if (state.camera_mode == 2 && sel.is_valid() && world_.is_alive(sel)) {
+        if (sel.has<ecs::Position>() && sel.has<ecs::Rotation>() && sel.has<ecs::Velocity>()) {
+            Vector3    ent_pos = sel.get<ecs::Position>().v;
+            Quaternion ent_rot = sel.get<ecs::Rotation>().q;
+            Vector3    ent_vel = sel.get<ecs::Velocity>().v;
+
+            // CRITICAL: Apply altitude exaggeration so camera tracks the visual model height
+            ent_pos.y *= state.altitude_exaggerate;
+
+            // Entity's local axes
+            Vector3 fwd = Vector3Normalize(Vector3RotateByQuaternion({0, 0, -1}, ent_rot));
+            Vector3 up  = Vector3Normalize(Vector3RotateByQuaternion({0, 1,  0}, ent_rot));
+            Vector3 rgt = Vector3CrossProduct(fwd, up);
+
+            // Chase distance scales with camera_distance slider
+            float base_dist = std::max(200.0f, state.camera_distance * 0.08f);
+
+            // Apply user yaw/pitch offsets (RMB drag while in chase mode)
+            float cy = state.chase_yaw_offset   * DEG2RAD;
+            float cp = state.chase_pitch_offset * DEG2RAD;
+
+            // Rotate the back-vector by user offset to allow swinging around
+            Vector3 back_dir = Vector3Negate(fwd);
+            // Yaw offset: spin around world-up
+            back_dir = Vector3RotateByQuaternion(back_dir,
+                QuaternionFromAxisAngle({0,1,0}, cy));
+            // Pitch offset: tilt up/down
+            back_dir = Vector3RotateByQuaternion(back_dir,
+                QuaternionFromAxisAngle(rgt, cp));
+
+            // Camera sits base_dist behind + elevated to give a top-down view angle
+            float height_mult = 0.45f + state.chase_pitch_offset * 0.008f;
+            Vector3 cam_offset = Vector3Add(
+                Vector3Scale(back_dir, base_dist),
+                Vector3Scale({0, 1, 0}, base_dist * height_mult)
+            );
+
+            Vector3 desired_pos = Vector3Add(ent_pos, cam_offset);
+
+            // Spring-damped smoothing — tight enough to feel responsive
+            float alpha = 1.0f - expf(-8.0f * dt);
+            camera_.position = Vector3Lerp(camera_.position, desired_pos, alpha);
+
+            // Look slightly ahead of the entity (in the direction of motion)
+            float speed = Vector3Length(ent_vel);
+            float look_ahead = std::min(speed * 1.5f, base_dist * 1.2f);
+            Vector3 look_target = Vector3Add(ent_pos, Vector3Scale(fwd, look_ahead));
+            camera_.target = Vector3Lerp(camera_.target, look_target, alpha);
+            camera_.up     = { 0.0f, 1.0f, 0.0f };
+        }
+    }
+    // ── MODE 0: Free Orbit ────────────────────────────────────────────────────
+    else {
+        float yaw_rad = state.camera_yaw * DEG2RAD;
+        Vector3 forward = { sinf(yaw_rad), 0.0f,  cosf(yaw_rad) };
+        Vector3 right   = { cosf(yaw_rad), 0.0f, -sinf(yaw_rad) };
+
+        // WASD keyboard pan — speed scales with zoom level
+        if (!ui_wants_mouse) {
+            float pan_speed = state.camera_distance * 0.45f * dt;
+            if (IsKeyDown(KEY_LEFT_SHIFT)) pan_speed *= 4.0f;
+
+            if (IsKeyDown(KEY_W) || IsKeyDown(KEY_UP))
+                camera_free_target_ = Vector3Subtract(camera_free_target_, Vector3Scale(forward, pan_speed));
+            if (IsKeyDown(KEY_S) || IsKeyDown(KEY_DOWN))
+                camera_free_target_ = Vector3Add(camera_free_target_, Vector3Scale(forward, pan_speed));
+            if (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT))
+                camera_free_target_ = Vector3Subtract(camera_free_target_, Vector3Scale(right, pan_speed));
+            if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT))
+                camera_free_target_ = Vector3Add(camera_free_target_, Vector3Scale(right, pan_speed));
+        }
+
+        camera_.target = camera_free_target_;
+
+        float pitch_rad = state.camera_pitch * DEG2RAD;
+        camera_.position = Vector3Add(camera_.target, {
+            state.camera_distance * cosf(pitch_rad) * sinf(yaw_rad),
+            state.camera_distance * sinf(pitch_rad),
+            state.camera_distance * cosf(pitch_rad) * cosf(yaw_rad)
+        });
+        camera_.up = { 0.0f, 1.0f, 0.0f };
+    }
 }
 
 } // namespace debrief

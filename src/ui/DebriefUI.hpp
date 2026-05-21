@@ -50,6 +50,26 @@ struct UIState {
 
     // Trail mode toggle (line vs ribbon)
     bool ribbon_trails = false;
+
+    // Camera & Visual settings
+    int   camera_mode = 0;                 // 0 = Free Orbit, 1 = Focus Target, 2 = Chase Target
+    float camera_yaw = 45.0f;
+    float camera_pitch = 25.0f;
+    float camera_distance = 2000.0f;
+    float entity_3d_scale = 20.0f;         // Visual scale multiplier
+    float trail_width_override = 15.0f;    // Trail width override in meters
+
+    // Chase camera offsets (modified by RMB drag while in mode 2)
+    float chase_yaw_offset   =   0.0f;    // degrees, lateral swing around entity
+    float chase_pitch_offset =  20.0f;    // degrees, 0=dead-behind, +ve=look down from above
+
+    // Altitude exaggeration: multiplies entity Y for rendering to make height differences visible
+    float altitude_exaggerate = 3.0f;     // 1 = real scale, 3 = 3x vertical stretch
+
+    // Terrain settings
+    bool  terrain_solid = true;
+    bool  terrain_wireframe = true;
+    float terrain_height_scale = 1.0f;
 };
 
 class DebriefUI {

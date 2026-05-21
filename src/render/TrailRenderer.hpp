@@ -28,11 +28,11 @@ class TrailRenderer {
 public:
     TrailMode mode = TrailMode::Line;
 
-    void draw(const ecs::Trail& trail, const Camera3D& camera) const noexcept {
+    void draw(const ecs::Trail& trail, const Camera3D& camera, float width_override = -1.0f) const noexcept {
         if (trail.count < 2) return;
 
         if (mode == TrailMode::Line)   draw_line(trail);
-        else                            draw_ribbon(trail, camera);
+        else                            draw_ribbon(trail, camera, width_override);
     }
 
 private:
@@ -55,7 +55,7 @@ private:
         });
     }
 
-    void draw_ribbon(const ecs::Trail& trail, const Camera3D& camera) const noexcept {
+    void draw_ribbon(const ecs::Trail& trail, const Camera3D& camera, float width_override = -1.0f) const noexcept {
         // Build a flat list of points (ordered oldest→newest).
         std::vector<Vector3> pts;
         pts.reserve(trail.count);
@@ -64,7 +64,8 @@ private:
         if (pts.size() < 2) return;
 
         Vector3 cam_pos = camera.position;
-        float hw = trail.width * 0.5f;
+        float w = (width_override > 0.0f) ? width_override : trail.width;
+        float hw = w * 0.5f;
 
         for (size_t i = 0; i + 1 < pts.size(); ++i) {
             Vector3 dir   = Vector3Normalize(Vector3Subtract(pts[i+1], pts[i]));
