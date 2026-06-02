@@ -267,7 +267,10 @@ void DebriefUI::draw_timeline(PlaybackController& pb,
                           ImPlotFlags_NoTitle | ImPlotFlags_NoMenus |
                           ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText))
     {
-        ImPlot::SetupAxes("Time", "Alt", ImPlotAxisFlags_NoLabel, 0);
+        // AutoFit both axes so the trace always fills the plot as data scrolls in.
+        ImPlot::SetupAxes("Time", "Alt",
+                          ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_AutoFit,
+                          ImPlotAxisFlags_AutoFit);
         if (plot_count_ > 0) {
             ImPlotSpec spec;
             spec.LineColor = ImVec4{0.00f, 0.70f, 1.00f, 1.00f};
@@ -300,6 +303,8 @@ void DebriefUI::draw_entity_list(const flecs::world& world)
 
             auto q = world.query<const EntityMeta, const Position, const Velocity>();
             q.each([&](flecs::entity e, const EntityMeta& meta, const Position& pos, const Velocity& vel) {
+                ImGui::PushID(static_cast<int>((meta.source_id << 16) ^ meta.entity_id));
+
                 char label[80];
                 if (meta.callsign[0])
                     snprintf(label, sizeof(label), "%s  %s", entity_type_icon(meta.type), meta.callsign);
@@ -308,34 +313,38 @@ void DebriefUI::draw_entity_list(const flecs::world& world)
 
                 bool selected = (state_.selected_entity == e);
 
-                if (!meta.active) {
+                if (!meta.active)
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.55f, 0.65f, 0.75f));
-                }
 
-                if (ImGui::Selectable(label, selected, 0, ImVec2(0, 32))) {
+                // Row 1: selectable callsign (full width, single line)
+                if (ImGui::Selectable(label, selected))
                     state_.selected_entity = selected ? flecs::entity{} : e;
-                }
 
                 if (!meta.active) {
                     ImGui::PopStyleColor();
                 } else {
-                    // Altitude and speed mini info row
-                    float spd = sqrtf(vel.v.x*vel.v.x + vel.v.y*vel.v.y + vel.v.z*vel.v.z);
-                    ImGui::SameLine(0, 4);
-                    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 15);
+                    // Row 2: dim altitude / speed line on its own row (no overlap).
+                    // Altitude in feet to match the in-world 3D labels.
+                    float spd_kt = sqrtf(vel.v.x*vel.v.x + vel.v.y*vel.v.y + vel.v.z*vel.v.z) * 1.94384f;
+                    float alt_ft = pos.v.y * 3.28084f;
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.65f, 0.9f, 0.75f));
-                    ImGui::Text("%.0fm  %.0fkt", pos.v.y, spd * 1.944f);
+                    ImGui::Text("      %.0f ft   %.0f kt", alt_ft, spd_kt);
                     ImGui::PopStyleColor();
+
+                    // Row 3: camera buttons (only for the selected track), split to
+                    // fill the panel width so they never overflow into each other.
+                    if (selected) {
+                        float w = (ImGui::GetContentRegionAvail().x - 4.0f) * 0.5f;
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.38f, 0.6f, 0.85f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.5f, 0.8f, 1.0f));
+                        if (ImGui::Button(ICON_FA_CROSSHAIRS " Focus", ImVec2(w, 0))) state_.camera_mode = 1;
+                        ImGui::SameLine(0, 4);
+                        if (ImGui::Button(ICON_FA_VIDEO " Chase", ImVec2(w, 0))) state_.camera_mode = 2;
+                        ImGui::PopStyleColor(2);
+                    }
                 }
 
-                if (selected && meta.active) {
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.38f, 0.6f, 0.85f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.5f, 0.8f, 1.0f));
-                    if (ImGui::SmallButton("  FOCUS  ")) state_.camera_mode = 1;
-                    ImGui::SameLine();
-                    if (ImGui::SmallButton(" CHASE "))  state_.camera_mode = 2;
-                    ImGui::PopStyleColor(2);
-                }
+                ImGui::PopID();
             });
 
             ImGui::EndTabItem();
@@ -370,6 +379,14 @@ void DebriefUI::draw_entity_list(const flecs::world& world)
             ImGui::TextUnformatted("F          Focus / Free toggle");
             ImGui::TextUnformatted("G          Chase cam toggle");
             ImGui::PopStyleColor();
+
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.75f, 1.0f, 1.0f));
+            ImGui::TextUnformatted("MOUSE");
+            ImGui::PopStyleColor();
+            ImGui::Checkbox("Invert rotate (grab scene)", &state_.invert_look);
+            ImGui::SetNextItemWidth(-1);
+            ImGui::SliderFloat("##MouseSens", &state_.mouse_sensitivity, 0.2f, 3.0f, "Sensitivity: %.2fx");
 
             ImGui::Separator();
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.75f, 1.0f, 1.0f));

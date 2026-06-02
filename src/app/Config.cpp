@@ -27,7 +27,10 @@ void ConfigManager::load_config(UIState& state, const std::string& path) {
         
         if (config["terrain_mode"]) state.terrain_mode = config["terrain_mode"].as<int>();
         if (config["terrain_height_scale"]) state.terrain_height_scale = config["terrain_height_scale"].as<float>();
-        
+
+        if (config["invert_look"]) state.invert_look = config["invert_look"].as<bool>();
+        if (config["mouse_sensitivity"]) state.mouse_sensitivity = config["mouse_sensitivity"].as<float>();
+
     } catch (const YAML::Exception& e) {
         std::cerr << "Config load failed: " << e.what() << "\n";
     }
@@ -54,7 +57,10 @@ void ConfigManager::save_config(const UIState& state, const std::string& path) {
         
         config["terrain_mode"] = state.terrain_mode;
         config["terrain_height_scale"] = state.terrain_height_scale;
-        
+
+        config["invert_look"] = state.invert_look;
+        config["mouse_sensitivity"] = state.mouse_sensitivity;
+
         std::ofstream fout(path);
         fout << config;
     } catch (const YAML::Exception& e) {

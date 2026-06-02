@@ -964,16 +964,21 @@ void Application::update_camera_state(float dt) {
     // In Chase mode, RMB adjusts chase yaw offset instead
     if (!ui_wants_mouse && IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
         Vector2 delta = GetMouseDelta();
-        // Sensitivity scales slightly with zoom so distant orbit feels right
-        float sens = 0.20f + 0.05f * std::clamp(state.camera_distance / 20000.0f, 0.0f, 1.5f);
+        // Sensitivity scales slightly with zoom so distant orbit feels right,
+        // then by the user's multiplier.
+        float sens = (0.20f + 0.05f * std::clamp(state.camera_distance / 20000.0f, 0.0f, 1.5f))
+                     * state.mouse_sensitivity;
+        // Inverted look = "grab the scene": dragging moves the world under the
+        // cursor instead of swinging the camera the opposite way.
+        float inv = state.invert_look ? -1.0f : 1.0f;
         if (state.camera_mode == 2) {
             // In chase mode — adjust lateral yaw offset around entity
-            state.chase_yaw_offset   += delta.x * 0.3f;
-            state.chase_pitch_offset -= delta.y * 0.2f;
+            state.chase_yaw_offset   += inv * delta.x * 0.3f * state.mouse_sensitivity;
+            state.chase_pitch_offset -= inv * delta.y * 0.2f * state.mouse_sensitivity;
             state.chase_pitch_offset  = std::clamp(state.chase_pitch_offset, -30.0f, 60.0f);
         } else {
-            state.camera_yaw   += delta.x * sens;
-            state.camera_pitch -= delta.y * sens;
+            state.camera_yaw   += inv * delta.x * sens;
+            state.camera_pitch -= inv * delta.y * sens;
             state.camera_pitch  = std::clamp(state.camera_pitch, -89.0f, 89.0f);
         }
     }
