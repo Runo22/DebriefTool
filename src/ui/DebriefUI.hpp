@@ -47,6 +47,7 @@ struct UIState {
     bool show_velocity_vec = false;
     bool show_stats        = true;
     bool show_minimap      = true;
+    bool show_settings_window = false;
 
     // Trail mode toggle (line vs ribbon)
     bool ribbon_trails = false;
@@ -66,9 +67,11 @@ struct UIState {
     // Altitude exaggeration: multiplies entity Y for rendering to make height differences visible
     float altitude_exaggerate = 3.0f;     // 1 = real scale, 3 = 3x vertical stretch
 
+    // Render settings
+    float far_clip_plane = 2000000.0f;
+
     // Terrain settings
-    bool  terrain_solid = true;
-    bool  terrain_wireframe = true;
+    int   terrain_mode = 3; // 0=None, 1=Wireframe, 2=Solid, 3=Both
     float terrain_height_scale = 1.0f;
 };
 
@@ -102,6 +105,7 @@ private:
     void draw_network_panel(const net::ReceiverStats& stats);
 
     void draw_minimap(const flecs::world& world);
+    void draw_settings_window();
 
     UIState    state_{};
     UICallbacks cbs_{};

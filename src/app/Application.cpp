@@ -9,6 +9,7 @@
 #include <cstring>
 #include <ctime>
 #include <algorithm>
+#include "Config.hpp"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -67,6 +68,7 @@ Application::Application(AppConfig cfg)
 Application::~Application() {
     if (!cfg_.demo_mode) udp_receiver_.stop();
     recorder_.stop();
+    ConfigManager::save_config(ui_.state(), "debrief_config.yaml");
     ImPlot::DestroyContext();
     rlImGuiShutdown();
     CloseWindow();
@@ -78,6 +80,7 @@ void Application::init_window() {
     InitWindow(cfg_.window_width, cfg_.window_height, cfg_.window_title.c_str());
     SetTargetFPS(cfg_.target_fps);
     rlImGuiSetup(true);
+
     ImPlot::CreateContext();
     ImGui::GetIO().IniFilename = nullptr; // don't write imgui.ini
 }
@@ -114,15 +117,18 @@ void Application::init_camera() {
     camera_.projection = CAMERA_PERSPECTIVE;
     camera_free_target_ = { 0.0f, 3000.0f, 0.0f };
 
-    // Sync UIState to match initial position
+    // Default initial settings before loading config
     ui_.state().camera_yaw      = 0.0f;
     ui_.state().camera_pitch    = 22.0f;   // angled to show height
     ui_.state().camera_distance = 12000.0f;
     ui_.state().entity_3d_scale = 30.0f;
     ui_.state().trail_width_override = 120.0f;
-    ui_.state().terrain_solid   = true;
-    ui_.state().terrain_wireframe = true;
+    ui_.state().terrain_mode    = 3;       // Both
     ui_.state().altitude_exaggerate = 3.0f;  // 3x vertical exaggeration
+    ui_.state().far_clip_plane  = 2000000.0f;
+
+    // Load config
+    ConfigManager::load_config(ui_.state(), "debrief_config.yaml");
 }
 
 void Application::init_ui_callbacks() {
@@ -177,6 +183,10 @@ void Application::tick(float dt) {
     if (cfg_.demo_mode) process_demo(dt);
     else                process_inbound_queue();
     update_ecs(dt);
+    
+    // Sync checkbox state for trail renderer
+    trails_.mode = ui_.state().ribbon_trails ? TrailMode::Ribbon : TrailMode::Line;
+    
     update_camera_state(dt);
     render();
 }
@@ -479,9 +489,8 @@ void Application::render() {
 }
 
 void Application::render_3d() {
-    // Extend far clip plane to 500 km — Raylib default is only 1000 m which
-    // clips everything beyond 1 km and makes the scene appear completely black.
-    rlSetClipPlanes(1.0f, 500000.0f);
+    // Extend far clip plane up to state.far_clip_plane
+    rlSetClipPlanes(1.0f, ui_.state().far_clip_plane);
     BeginMode3D(camera_);
 
     const float exag = ui_.state().altitude_exaggerate;
@@ -492,7 +501,7 @@ void Application::render_3d() {
     };
 
     // 1. Terrain (drawn at real scale — it's already near ground level)
-    if (ui_.state().terrain_solid || ui_.state().terrain_wireframe) {
+    if (ui_.state().terrain_mode > 0) {
         draw_terrain();
     } else {
         // Fallback tactical grid
@@ -681,7 +690,7 @@ void Application::handle_input(float /*dt*/) {
 
 void Application::draw_terrain() {
     auto& state = ui_.state();
-    if (!state.terrain_solid && !state.terrain_wireframe) return;
+    if (state.terrain_mode == 0) return;
 
     // ── LOD: adapt grid resolution to camera distance ─────────────────────────
     // Close  (<3km):  step=1 → 80x80 tiles @ 1km  (full detail)
@@ -727,7 +736,7 @@ void Application::draw_terrain() {
     };
 
     // ── Solid terrain ─────────────────────────────────────────────────────────
-    if (state.terrain_solid) {
+    if (state.terrain_mode == 2 || state.terrain_mode == 3) {
         rlBegin(RL_QUADS);
         for (int iz = 0; iz < grid_n; ++iz) {
             for (int ix = 0; ix < grid_n; ++ix) {
@@ -751,7 +760,7 @@ void Application::draw_terrain() {
     }
 
     // ── Grid wireframe — only draw when close enough to see detail ────────────
-    if (state.terrain_wireframe) {
+    if (state.terrain_mode == 1 || state.terrain_mode == 3) {
         float alpha_f = 1.0f - std::clamp((cam_dist - 15000.0f) / 25000.0f, 0.0f, 1.0f);
         unsigned char grid_alpha = (unsigned char)(alpha_f * 40.0f); // Subtle grid lines
         if (grid_alpha > 2) {

@@ -14,13 +14,13 @@ using namespace ecs;
 // ── Icons and naming ─────────────────────────────────────────────────────────
 static const char* entity_type_icon(uint16_t t) {
     switch (t) {
-    case net::TYPE_JET:     return "✈";
-    case net::TYPE_MISSILE: return "✦";
-    case net::TYPE_AAA:     return "☗";
-    case net::TYPE_GROUND:  return "⛟";
-    case net::TYPE_HELO:    return "🚁";
-    case net::TYPE_SHIP:    return "🚢";
-    default:                return "❓";
+    case net::TYPE_JET:     return ICON_FA_PLANE;
+    case net::TYPE_MISSILE: return ICON_FA_ROCKET;
+    case net::TYPE_AAA:     return ICON_FA_SHIELD;
+    case net::TYPE_GROUND:  return ICON_FA_TRUCK;
+    case net::TYPE_HELO:    return ICON_FA_HELICOPTER;
+    case net::TYPE_SHIP:    return ICON_FA_SHIP;
+    default:                return ICON_FA_CIRCLE_QUESTION;
     }
 }
 
@@ -123,6 +123,7 @@ void DebriefUI::draw(PlaybackController& pb,
     draw_inspector(world);
     draw_network_panel(net_stats);
     if (state_.show_minimap) draw_minimap(world);
+    draw_settings_window();
 }
 
 // ── Toolbar ───────────────────────────────────────────────────────────────────
@@ -194,14 +195,10 @@ void DebriefUI::draw_toolbar(PlaybackController& pb,
     ImGui::Separator();
     ImGui::SameLine();
 
-    // ── Display toggles ───────────────────────────────────────────────────────
-    ImGui::Checkbox("Trails", &state_.show_trails);
-    ImGui::SameLine();
-    ImGui::Checkbox("Labels", &state_.show_labels);
-    ImGui::SameLine();
-    ImGui::Checkbox("Ribbon", &state_.ribbon_trails);
-    ImGui::SameLine();
-    ImGui::Checkbox("Velocity Vector", &state_.show_velocity_vec);
+    // ── Settings button ───────────────────────────────────────────────────────
+    if (ImGui::Button(ICON_FA_GEAR " Settings")) {
+        state_.show_settings_window = !state_.show_settings_window;
+    }
 
     ImGui::End();
 }
@@ -392,10 +389,11 @@ void DebriefUI::draw_entity_list(const flecs::world& world)
 
             ImGui::Separator();
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.75f, 1.0f, 1.0f));
-            ImGui::TextUnformatted("TERRAIN");
+            ImGui::TextUnformatted("TERRAIN (Quick)");
             ImGui::PopStyleColor();
-            ImGui::Checkbox("Solid Fill",     &state_.terrain_solid);
-            ImGui::Checkbox("Grid Overlay",   &state_.terrain_wireframe);
+            const char* terrain_modes[] = { "None", "Wireframe", "Solid", "Both" };
+            ImGui::SetNextItemWidth(-1);
+            ImGui::Combo("##TerrainMode", &state_.terrain_mode, terrain_modes, IM_ARRAYSIZE(terrain_modes));
             ImGui::SetNextItemWidth(-1);
             ImGui::SliderFloat("##Hills", &state_.terrain_height_scale, 0.0f, 4.0f, "Hills: %.1fx");
 
@@ -567,4 +565,45 @@ void DebriefUI::draw_minimap(const flecs::world& world)
     ImGui::Dummy({sz, sz});
     ImGui::End();
 }
+
+// ── Settings Window ───────────────────────────────────────────────────────────
+void DebriefUI::draw_settings_window() {
+    if (!state_.show_settings_window) return;
+
+    ImGui::SetNextWindowSize({300.0f, 400.0f}, ImGuiCond_FirstUseEver);
+    if (ImGui::Begin(ICON_FA_GEAR " Settings", &state_.show_settings_window)) {
+        
+        if (ImGui::CollapsingHeader("Display & Overlays", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Checkbox("Callsign Labels",  &state_.show_labels);
+            ImGui::Checkbox("Trail Lines",      &state_.show_trails);
+            ImGui::Checkbox("Ribbon Mode",      &state_.ribbon_trails);
+            ImGui::Checkbox("Velocity Vectors", &state_.show_velocity_vec);
+            ImGui::Checkbox("Minimap",          &state_.show_minimap);
+            ImGui::Checkbox("Network Stats",    &state_.show_stats);
+        }
+
+        if (ImGui::CollapsingHeader("Graphics & Engine", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("Far Clip Plane (Render Distance)");
+            ImGui::SliderFloat("##FarClip", &state_.far_clip_plane, 10000.0f, 2000000.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
+            
+            ImGui::Text("Terrain Mode");
+            const char* terrain_modes[] = { "None", "Wireframe", "Solid", "Both" };
+            ImGui::Combo("##SettingsTerrainMode", &state_.terrain_mode, terrain_modes, IM_ARRAYSIZE(terrain_modes));
+            
+            ImGui::Text("Terrain Height Scale");
+            ImGui::SliderFloat("##SettingsHills", &state_.terrain_height_scale, 0.0f, 4.0f, "%.1fx");
+        }
+        
+        if (ImGui::CollapsingHeader("Controls", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::TextDisabled("Changes made here persist across sessions.");
+        }
+        
+        ImGui::Separator();
+        if (ImGui::Button("Close", {-1, 0})) {
+            state_.show_settings_window = false;
+        }
+    }
+    ImGui::End();
+}
+
 } // namespace debrief

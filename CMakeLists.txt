@@ -101,6 +101,12 @@ if(DEBRIEF_TRACY)
     add_compile_definitions(TRACY_ENABLE)
 endif()
 
+# ── Third-party: yaml-cpp ─────────────────────────────────────────────────────
+set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/yaml-cpp)
+
 # ── Main executable ────────────────────────────────────────────────────────────
 file(GLOB_RECURSE DEBRIEF_SRC "src/*.cpp" "src/*.hpp")
 
@@ -118,6 +124,7 @@ target_link_libraries(debrief PRIVATE
     assimp
     imgui
     rlimgui
+    yaml-cpp
 )
 
 # ── Strict flags for OUR code only — NOT propagated to submodules ──────────────
