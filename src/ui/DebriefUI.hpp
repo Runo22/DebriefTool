@@ -41,6 +41,9 @@ struct UIState {
     // Dashcam
     float dashcam_secs = 60.0f;
 
+    // Session file loading (path typed into the Settings → Session Files panel)
+    char load_path[256] = "";
+
     // Display options
     bool show_trails       = true;
     bool show_labels       = true;

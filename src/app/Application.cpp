@@ -9,7 +9,10 @@
 #include <cstring>
 #include <ctime>
 #include <algorithm>
+#include <initializer_list>
+#include <vector>
 #include "Config.hpp"
+#include "../persistence/CsvImporter.hpp"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -149,7 +152,58 @@ void Application::init_ui_callbacks() {
         persist::Recorder::export_slice(store_, secs, fn, "dashcam");
     };
     cbs.on_load_file = [this](std::string path) {
+        store_.clear();
         persist::Recorder::load_into(path, store_);
+        auto [ts, te] = store_.time_range_ns();
+        playback_.seek(ts);
+        playback_.pause();
+    };
+    cbs.on_load_csv = [this](std::string path) {
+        // Flexible importer: map the column names commonly emitted by sim/ACMI
+        // exporters. Only columns actually present in the file are used.
+        persist::CsvImporter imp;
+        using F = persist::CsvField;
+        auto m = [&](std::initializer_list<const char*> names, F f) {
+            for (const char* n : names) imp.map(n, f);
+        };
+        m({"time", "timestamp", "t", "sec", "seconds"},   F::TimestampSec);
+        m({"time_ms", "ms"},                               F::TimestampMs);
+        m({"time_ns", "ns"},                               F::TimestampNs);
+        m({"id", "entity_id", "entityid"},                 F::EntityId);
+        m({"type", "entity_type"},                         F::EntityType);
+        m({"source", "source_id"},                         F::SourceId);
+        m({"callsign", "name"},                            F::Callsign);
+        m({"x", "pos_x", "east", "posx"},                  F::PosX);
+        m({"y", "alt", "altitude", "up", "posy"},          F::PosY);
+        m({"z", "pos_z", "north", "posz"},                 F::PosZ);
+        m({"vx", "vel_x"}, F::VelX);  m({"vy", "vel_y"}, F::VelY);  m({"vz", "vel_z"}, F::VelZ);
+        m({"yaw", "heading", "psi"},                       F::YawDeg);
+        m({"pitch", "theta"},                              F::PitchDeg);
+        m({"roll", "phi"},                                 F::RollDeg);
+        m({"health", "hp"},                                F::Health);
+
+        std::vector<net::EntityState> states = imp.import_all(path);
+        if (states.empty()) return;
+
+        // Group rows by timestamp into per-frame snapshots, in ascending order.
+        std::stable_sort(states.begin(), states.end(),
+            [](const net::EntityState& a, const net::EntityState& b) {
+                return a.timestamp_ns < b.timestamp_ns;
+            });
+
+        store_.clear();
+        std::vector<net::EntityState> frame;
+        uint64_t frame_ts = states.front().timestamp_ns;
+        auto flush = [&] {
+            if (!frame.empty()) store_.ingest(frame_ts, frame);
+            frame.clear();
+        };
+        for (auto& s : states) {
+            if (s.timestamp_ns != frame_ts) { flush(); frame_ts = s.timestamp_ns; }
+            frame.push_back(s);
+        }
+        flush();
+
         auto [ts, te] = store_.time_range_ns();
         playback_.seek(ts);
         playback_.pause();
@@ -479,9 +533,18 @@ void Application::update_ecs(float dt) {
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
+// Atmospheric palette — the horizon colour is reused as the fog target so
+// distant terrain dissolves into the sky instead of hard-cutting.
+static constexpr Color kSkyZenith  = {  8, 12, 22, 255 };  // deep space, top of screen
+static constexpr Color kSkyHorizon = { 32, 44, 62, 255 };  // hazy blue-grey at the horizon
+
 void Application::render() {
     BeginDrawing();
-    ClearBackground({12, 16, 22, 255});
+    // ClearBackground also clears the depth buffer; the gradient then paints
+    // over the colour buffer to give a sky/horizon backdrop with real depth.
+    ClearBackground(kSkyHorizon);
+    DrawRectangleGradientV(0, 0, GetScreenWidth(), GetScreenHeight(),
+                           kSkyZenith, kSkyHorizon);
     render_3d();
     render_ui();
     DrawFPS(GetScreenWidth() - 80, 4);
@@ -608,24 +671,57 @@ void Application::render_3d() {
 
     // Screen-space labels (using exaggerated Y for GetWorldToScreen)
     if (ui_.state().show_labels) {
+        Vector3 cam_fwd = Vector3Normalize(
+            Vector3Subtract(camera_.target, camera_.position));
         world_.query<const ecs::EntityMeta, const ecs::Position>()
             .each([&](flecs::entity fe, const ecs::EntityMeta& meta, const ecs::Position& pos) {
                 if (!meta.active) return;
                 Vector3 rp2 = { pos.v.x, pos.v.y * exag, pos.v.z };
-                Vector2 sp  = GetWorldToScreen(rp2, camera_);
-                if (sp.x < 0 || sp.x > GetScreenWidth() ||
-                    sp.y < 0 || sp.y > GetScreenHeight()) return;
+
+                // Cull anything behind the camera — GetWorldToScreen otherwise
+                // projects rear points back onto screen as ghost labels.
+                Vector3 to_ent = Vector3Subtract(rp2, camera_.position);
+                if (Vector3DotProduct(to_ent, cam_fwd) <= 0.0f) return;
+
+                Vector2 sp = GetWorldToScreen(rp2, camera_);
+                if (sp.x < -64 || sp.x > GetScreenWidth() + 64 ||
+                    sp.y < -32 || sp.y > GetScreenHeight() + 32) return;
+
+                bool sel = (ui_.state().selected_entity == fe);
+
+                // Distance fade — far labels dim out so clusters stay readable.
+                // The selected entity always stays fully opaque.
+                float dist = Vector3Length(to_ent);
+                float fade = 1.0f - std::clamp(
+                    (dist - cam_dist * 2.0f) / (cam_dist * 4.0f), 0.0f, 1.0f);
+                if (sel) fade = 1.0f;
+                if (fade < 0.08f) return;
+                unsigned char a = (unsigned char)(fade * 255.0f);
+
                 const char* lbl = meta.callsign[0]
                     ? meta.callsign : TextFormat("#%u", meta.entity_id);
-                int tx = (int)sp.x + 8, ty = (int)sp.y - 7;
-                DrawText(lbl, tx+1, ty+1, 15, {0,0,0,180});
-                bool sel = (ui_.state().selected_entity == fe);
-                DrawText(lbl, tx, ty, 15,
-                         sel ? Color{255,220,0,255} : Color{180,220,255,230});
-                // Show altitude next to label
                 int alt_ft = (int)(pos.v.y * 3.28084f);
-                if (alt_ft > 50)
-                    DrawText(TextFormat(" %dft", alt_ft), tx, ty+16, 12, {0,200,255,180});
+                const char* alt = (alt_ft > 50) ? TextFormat("%dft", alt_ft) : nullptr;
+
+                const int fs = 15, afs = 12;
+                int tx = (int)sp.x + 9, ty = (int)sp.y - 8;
+                int wlbl = MeasureText(lbl, fs);
+                int walt = alt ? MeasureText(alt, afs) : 0;
+                int w = std::max(wlbl, walt);
+                int h = fs + (alt ? afs + 2 : 0);
+
+                // Background plate keeps text legible over bright/busy terrain.
+                DrawRectangle(tx - 4, ty - 3, w + 8, h + 6,
+                              { 6, 10, 18, (unsigned char)(a * 0.62f) });
+                DrawRectangleLines(tx - 4, ty - 3, w + 8, h + 6,
+                              sel ? Color{ 255, 220, 0, a }
+                                  : Color{ 40, 90, 120, (unsigned char)(a * 0.7f) });
+
+                DrawText(lbl, tx, ty, fs,
+                         sel ? Color{ 255, 220, 0, a } : Color{ 200, 228, 255, a });
+                if (alt)
+                    DrawText(alt, tx, ty + fs + 2, afs,
+                             { 0, 200, 255, (unsigned char)(a * 0.85f) });
             });
     }
 
@@ -699,30 +795,40 @@ void Application::draw_terrain() {
     auto& state = ui_.state();
     if (state.terrain_mode == 0) return;
 
-    // ── LOD: adapt grid resolution to camera distance ─────────────────────────
-    // Close  (<3km):  step=1 → 80x80 tiles @ 1km  (full detail)
-    // Medium (3-10km): step=2 → 40x40 tiles @ 2km
-    // Far   (10-25km): step=4 → 20x20 tiles @ 4km
-    // Very far (>25km): step=8 → 10x10 tiles @ 8km (coarse silhouette)
+    // ── LOD: adapt grid resolution to camera distance, with geomorphing ───────
+    // Detail halves at each band boundary (step 1→2→4→8). To kill the visible
+    // "pop" at a boundary, the fine-grid vertices that vanish at the next coarser
+    // level are smoothly morphed toward the coarse surface over the upper half of
+    // each band — so by the time the step actually doubles the meshes already
+    // coincide (classic geomipmap geomorphing).
     const float cam_dist = state.camera_distance;
-    int lod_step = 1;
-    if      (cam_dist > 25000.0f) lod_step = 8;
-    else if (cam_dist > 10000.0f) lod_step = 4;
-    else if (cam_dist >  3000.0f) lod_step = 2;
+    int   lod_step = 8;
+    float band_lo = 25000.0f, band_hi = 0.0f;   // band_hi==0 ⇒ coarsest, no morph
+    if      (cam_dist < 3000.0f)  { lod_step = 1; band_lo = 0.0f;     band_hi = 3000.0f;  }
+    else if (cam_dist < 10000.0f) { lod_step = 2; band_lo = 3000.0f;  band_hi = 10000.0f; }
+    else if (cam_dist < 25000.0f) { lod_step = 4; band_lo = 10000.0f; band_hi = 25000.0f; }
+
+    float morph = 0.0f;
+    if (band_hi > 0.0f) {
+        float morph_start = band_lo + (band_hi - band_lo) * 0.5f;
+        morph = std::clamp((cam_dist - morph_start) / (band_hi - morph_start), 0.0f, 1.0f);
+    }
 
     constexpr int   FULL_GRID = 80;            // 80 columns/rows at all LODs
     constexpr float BASE_TILE = 1000.0f;       // 1 km base tile
     float tile_sz = BASE_TILE * lod_step;
     int   grid_n  = FULL_GRID;                // Number of tiles is constant, so physical width expands with LOD
 
-    // Infinite terrain: center the grid on the camera, snapped to tile size
-    float cam_grid_x = roundf(camera_.position.x / tile_sz) * tile_sz;
-    float cam_grid_z = roundf(camera_.position.z / tile_sz) * tile_sz;
+    // Infinite terrain: center on the camera, snapped to 2× tile size so that a
+    // vertex's even/odd parity matches the next-coarser grid (needed for morphing).
+    float snap = tile_sz * 2.0f;
+    float cam_grid_x = roundf(camera_.position.x / snap) * snap;
+    float cam_grid_z = roundf(camera_.position.z / snap) * snap;
     float start_x = cam_grid_x - (grid_n * tile_sz) * 0.5f;
     float start_z = cam_grid_z - (grid_n * tile_sz) * 0.5f;
 
-    // Height function (world-space coords)
-    auto get_height = [&](float wx, float wz) -> float {
+    // Raw procedural height (world-space coords)
+    auto base_height = [&](float wx, float wz) -> float {
         float h = 800.0f * sinf(wx * 0.00006f) * cosf(wz * 0.00006f)
                 + 350.0f * sinf(wx * 0.00015f + 0.8f) * sinf(wz * 0.00012f + 1.2f)
                 + 120.0f * cosf(wx * 0.0004f + 2.0f)  * cosf(wz * 0.0003f)
@@ -730,16 +836,44 @@ void Application::draw_terrain() {
         return h * state.terrain_height_scale;
     };
 
-    // Military Space aesthetic
-    auto terrain_color = [&](float h) {
+    // Geomorphed height at grid index (ix,iz). Odd vertices (those absent from the
+    // next-coarser grid) blend toward the coarse surface by the morph factor.
+    auto get_height = [&](int ix, int iz) -> float {
+        float wx = start_x + ix * tile_sz, wz = start_z + iz * tile_sz;
+        float h = base_height(wx, wz);
+        if (morph <= 0.001f) return h;
+        bool ox = (ix & 1) != 0, oz = (iz & 1) != 0;
+        float ts = tile_sz, coarse = h;
+        if (ox && !oz)      coarse = 0.5f  * (base_height(wx - ts, wz) + base_height(wx + ts, wz));
+        else if (!ox && oz) coarse = 0.5f  * (base_height(wx, wz - ts) + base_height(wx, wz + ts));
+        else if (ox && oz)  coarse = 0.25f * (base_height(wx - ts, wz - ts) + base_height(wx + ts, wz - ts)
+                                            + base_height(wx - ts, wz + ts) + base_height(wx + ts, wz + ts));
+        return h + (coarse - h) * morph;
+    };
+
+    // Fog blend [0..1] from the camera, scaled to zoom so the terrain's far edge
+    // always dissolves into the horizon regardless of LOD/zoom level.
+    auto fog_factor = [&](float wx, float wz) -> float {
+        float dx = wx - camera_.position.x, dz = wz - camera_.position.z;
+        float d  = sqrtf(dx * dx + dz * dz);
+        float start = cam_dist * 0.6f, end = cam_dist * 2.6f;
+        return std::clamp((d - start) / std::max(1.0f, end - start), 0.0f, 1.0f);
+    };
+
+    // Military-space surface colour, blended toward the horizon haze by fog.
+    auto terrain_color = [&](float h, float wx, float wz) {
         float nh = (state.terrain_height_scale > 0.01f)
                    ? std::clamp((h + 1000.0f) / (2000.0f * state.terrain_height_scale), 0.0f, 1.0f)
                    : 0.5f;
         // Deep space blue/black base, fading to dark obsidian/slate peaks
-        unsigned char r = (unsigned char)(10 + nh * 15);
-        unsigned char g = (unsigned char)(15 + nh * 20);
-        unsigned char b = (unsigned char)(25 + nh * 30);
-        rlColor4ub(r, g, b, 255);
+        float r = 10.0f + nh * 15.0f;
+        float g = 15.0f + nh * 20.0f;
+        float b = 25.0f + nh * 30.0f;
+        float f = fog_factor(wx, wz);
+        r += (kSkyHorizon.r - r) * f;
+        g += (kSkyHorizon.g - g) * f;
+        b += (kSkyHorizon.b - b) * f;
+        rlColor4ub((unsigned char)r, (unsigned char)g, (unsigned char)b, 255);
     };
 
     // ── Solid terrain ─────────────────────────────────────────────────────────
@@ -750,13 +884,13 @@ void Application::draw_terrain() {
                 float x0 = start_x + ix * tile_sz,  z0 = start_z + iz * tile_sz;
                 float x1 = x0 + tile_sz,            z1 = z0 + tile_sz;
 
-                float h00 = get_height(x0, z0);
-                float h10 = get_height(x1, z0);
-                float h11 = get_height(x1, z1);
-                float h01 = get_height(x0, z1);
+                float h00 = get_height(ix,     iz);
+                float h10 = get_height(ix + 1, iz);
+                float h11 = get_height(ix + 1, iz + 1);
+                float h01 = get_height(ix,     iz + 1);
                 float havg = (h00 + h10 + h11 + h01) * 0.25f;
 
-                terrain_color(havg);
+                terrain_color(havg, x0 + tile_sz * 0.5f, z0 + tile_sz * 0.5f);
                 rlVertex3f(x0, h00, z0);
                 rlVertex3f(x0, h01, z1);
                 rlVertex3f(x1, h11, z1);
@@ -785,13 +919,15 @@ void Application::draw_terrain() {
                     float x0 = start_x + ix * tile_sz, z0 = start_z + iz * tile_sz;
                     float x1 = x0 + tile_sz,           z1 = z0 + tile_sz;
 
-                    float h00 = get_height(x0, z0);
-                    float h10 = get_height(x1, z0);
-                    float h11 = get_height(x1, z1);
-                    float h01 = get_height(x0, z1);
+                    float h00 = get_height(ix,     iz);
+                    float h10 = get_height(ix + 1, iz);
+                    float h11 = get_height(ix + 1, iz + 1);
+                    float h01 = get_height(ix,     iz + 1);
 
-                    // Military space grid: desaturated cyan/grey
-                    rlColor4ub(40, 90, 110, grid_alpha);
+                    // Military space grid: desaturated cyan/grey, fading with the
+                    // terrain into the horizon haze at distance.
+                    float gf = 1.0f - fog_factor(x0 + tile_sz * 0.5f, z0 + tile_sz * 0.5f);
+                    rlColor4ub(40, 90, 110, (unsigned char)(grid_alpha * gf));
                     rlVertex3f(x0, h00 + wire_off, z0);
                     rlVertex3f(x0, h01 + wire_off, z1);
 

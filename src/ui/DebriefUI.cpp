@@ -195,7 +195,11 @@ void DebriefUI::draw_toolbar(PlaybackController& pb,
     ImGui::Separator();
     ImGui::SameLine();
 
-    // ── Settings button ───────────────────────────────────────────────────────
+    // ── Open / Settings buttons ────────────────────────────────────────────────
+    if (ImGui::Button(ICON_FA_FOLDER_OPEN " Open")) {
+        state_.show_settings_window = true;   // load controls live in the Settings panel
+    }
+    ImGui::SameLine();
     if (ImGui::Button(ICON_FA_GEAR " Settings")) {
         state_.show_settings_window = !state_.show_settings_window;
     }
@@ -573,6 +577,23 @@ void DebriefUI::draw_settings_window() {
     ImGui::SetNextWindowSize({300.0f, 400.0f}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin(ICON_FA_GEAR " Settings", &state_.show_settings_window)) {
         
+        if (ImGui::CollapsingHeader("Session Files", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::TextDisabled("Open a recorded .dbr session or import a CSV log.");
+            ImGui::SetNextItemWidth(-1.0f);
+            ImGui::InputTextWithHint("##load_path", "path to .dbr or .csv file",
+                                     state_.load_path, sizeof(state_.load_path));
+            bool has_path = state_.load_path[0] != '\0';
+            ImGui::BeginDisabled(!has_path);
+            if (ImGui::Button(ICON_FA_FOLDER_OPEN " Open .dbr")) {
+                if (cbs_.on_load_file) cbs_.on_load_file(state_.load_path);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(ICON_FA_FILE_IMPORT " Import CSV")) {
+                if (cbs_.on_load_csv) cbs_.on_load_csv(state_.load_path);
+            }
+            ImGui::EndDisabled();
+        }
+
         if (ImGui::CollapsingHeader("Display & Overlays", ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Checkbox("Callsign Labels",  &state_.show_labels);
             ImGui::Checkbox("Trail Lines",      &state_.show_trails);
