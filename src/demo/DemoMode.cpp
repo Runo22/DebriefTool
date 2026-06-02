@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <algorithm>
 #include <cstring>
 
 #ifndef M_PI
