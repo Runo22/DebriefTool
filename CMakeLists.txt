@@ -31,6 +31,7 @@ if(MSVC)
         /wd4244          # double->float narrowing in C library headers
         /wd4305          # double->float truncation in third-party initializers
         /wd4100          # unreferenced formal parameter in third-party code
+        /wd4127          # "conditional expression is constant" in Flecs templates (VS2022 cl)
     )
     add_compile_options(/Zc:__cplusplus /std:c++latest)
     add_compile_definitions(
