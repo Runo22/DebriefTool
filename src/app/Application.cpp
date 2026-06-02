@@ -489,8 +489,15 @@ void Application::render() {
 }
 
 void Application::render_3d() {
-    // Extend far clip plane up to state.far_clip_plane
-    rlSetClipPlanes(1.0f, ui_.state().far_clip_plane);
+    // Depth precision scales with the near/far ratio. A fixed 1m near plane
+    // against a 2000km far plane gives a ratio of ~2,000,000 which destroys
+    // depth precision and causes z-fighting / wireframe flicker at far zoom.
+    // Scale the near plane with camera distance so the ratio stays sane while
+    // still letting close-up views keep a tight near plane.
+    const float cam_dist   = ui_.state().camera_distance;
+    const float near_plane = std::clamp(cam_dist * 0.01f, 1.0f, 2000.0f);
+    const float far_plane  = std::max(ui_.state().far_clip_plane, cam_dist * 4.0f);
+    rlSetClipPlanes(near_plane, far_plane);
     BeginMode3D(camera_);
 
     const float exag = ui_.state().altitude_exaggerate;
@@ -759,10 +766,18 @@ void Application::draw_terrain() {
         rlEnd();
     }
 
-    // ── Grid wireframe — only draw when close enough to see detail ────────────
+    // ── Grid wireframe — stays legible at every zoom level ────────────────────
     if (state.terrain_mode == 1 || state.terrain_mode == 3) {
-        float alpha_f = 1.0f - std::clamp((cam_dist - 15000.0f) / 25000.0f, 0.0f, 1.0f);
-        unsigned char grid_alpha = (unsigned char)(alpha_f * 40.0f); // Subtle grid lines
+        // Keep the grid visible at all distances. Fade only gently at extreme
+        // zoom so it never vanishes — it remains a subtle reference at any scale.
+        float fade = 1.0f - std::clamp((cam_dist - 60000.0f) / 40000.0f, 0.0f, 0.55f);
+        // Lone wireframe (mode 1) is the primary visual, so make it brighter than
+        // the overlay grid drawn on top of solid terrain (mode 3).
+        float peak = (state.terrain_mode == 1) ? 150.0f : 80.0f;
+        unsigned char grid_alpha = (unsigned char)(fade * peak);
+        // Lift the grid above the solid surface by a distance-scaled offset so it
+        // never z-fights with the terrain once depth precision drops at far zoom.
+        float wire_off = std::max(2.0f, cam_dist * 0.0015f);
         if (grid_alpha > 2) {
             rlBegin(RL_LINES);
             for (int iz = 0; iz < grid_n; ++iz) {
@@ -777,17 +792,17 @@ void Application::draw_terrain() {
 
                     // Military space grid: desaturated cyan/grey
                     rlColor4ub(40, 90, 110, grid_alpha);
-                    rlVertex3f(x0, h00 + 2.0f, z0);
-                    rlVertex3f(x0, h01 + 2.0f, z1);
+                    rlVertex3f(x0, h00 + wire_off, z0);
+                    rlVertex3f(x0, h01 + wire_off, z1);
 
-                    rlVertex3f(x0, h00 + 2.0f, z0);
-                    rlVertex3f(x1, h10 + 2.0f, z0);
+                    rlVertex3f(x0, h00 + wire_off, z0);
+                    rlVertex3f(x1, h10 + wire_off, z0);
 
-                    rlVertex3f(x0, h01 + 2.0f, z1);
-                    rlVertex3f(x1, h11 + 2.0f, z1);
+                    rlVertex3f(x0, h01 + wire_off, z1);
+                    rlVertex3f(x1, h11 + wire_off, z1);
 
-                    rlVertex3f(x1, h10 + 2.0f, z0);
-                    rlVertex3f(x1, h11 + 2.0f, z1);
+                    rlVertex3f(x1, h10 + wire_off, z0);
+                    rlVertex3f(x1, h11 + wire_off, z1);
                 }
             }
             rlEnd();

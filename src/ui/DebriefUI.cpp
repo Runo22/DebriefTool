@@ -141,12 +141,12 @@ void DebriefUI::draw_toolbar(PlaybackController& pb,
     if (recorder.is_recording()) {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.85f, 0.15f, 0.20f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 0.25f, 0.30f, 1.0f));
-        if (ImGui::Button("● STOP REC") && cbs_.on_record_stop) cbs_.on_record_stop();
+        if (ImGui::Button(ICON_FA_STOP " STOP REC") && cbs_.on_record_stop) cbs_.on_record_stop();
         ImGui::PopStyleColor(2);
     } else {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.40f, 0.25f, 0.85f));
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.16f, 0.55f, 0.35f, 1.00f));
-        if (ImGui::Button("● RECORD") && cbs_.on_record_start) cbs_.on_record_start();
+        if (ImGui::Button(ICON_FA_VIDEO " RECORD") && cbs_.on_record_start) cbs_.on_record_start();
         ImGui::PopStyleColor(2);
     }
 
@@ -154,7 +154,7 @@ void DebriefUI::draw_toolbar(PlaybackController& pb,
     ImGui::SetNextItemWidth(80);
     ImGui::InputFloat("##dashcam_s", &state_.dashcam_secs, 0, 0, "%.0f s");
     ImGui::SameLine();
-    if (ImGui::Button("Save Last N")) {
+    if (ImGui::Button(ICON_FA_FLOPPY_DISK " Save Last N")) {
         if (cbs_.on_save_dashcam) cbs_.on_save_dashcam(state_.dashcam_secs);
     }
 
@@ -174,9 +174,9 @@ void DebriefUI::draw_toolbar(PlaybackController& pb,
     ImGui::SameLine();
 
     if (pb.state() == PlaybackState::Paused || pb.is_live()) {
-        if (ImGui::Button(" ▶ PLAY ")) pb.play(pb.speed());
+        if (ImGui::Button(ICON_FA_PLAY " PLAY")) pb.play(pb.speed());
     } else {
-        if (ImGui::Button(" ‖ PAUSE ")) pb.pause();
+        if (ImGui::Button(ICON_FA_PAUSE " PAUSE")) pb.pause();
     }
 
     ImGui::SameLine();
@@ -187,9 +187,9 @@ void DebriefUI::draw_toolbar(PlaybackController& pb,
         pb.set_speed(spd);
 
     ImGui::SameLine();
-    if (ImGui::Button(" ◀◀ ")) pb.set_speed(-4.0f);
+    if (ImGui::Button(ICON_FA_BACKWARD_FAST "##rewind")) pb.set_speed(-4.0f);
     ImGui::SameLine();
-    if (ImGui::Button(" ▶▶ ")) pb.set_speed( 4.0f);
+    if (ImGui::Button(ICON_FA_FORWARD_FAST "##ffwd")) pb.set_speed( 4.0f);
 
     ImGui::SameLine();
     ImGui::Separator();
