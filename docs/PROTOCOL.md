@@ -81,89 +81,130 @@ Python format string: `"<IHB32sdddddddQ"`
 
 ---
 
-## Example — Python
+## C++ structs
 
-```python
-import socket, struct, time
+Declare the wire structs with 1-byte packing so they map exactly onto the
+datagram. These are byte-for-byte identical to `src/network/Packet.hpp`.
 
-MAGIC    = b"DBF1"
-HDR_FMT  = "<4sBBI"            # BatchHeader  (10 bytes)
-ENT_FMT  = "<IHB32sdddddddQ"  # EntityUpdate (103 bytes)
-
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-seq  = 0
-
-def make_entity(eid, etype, callsign, lat, lon, alt,
-                phi=0.0, theta=0.0, psi=0.0, speed=0.0, health=255):
-    cs = callsign.encode()[:31].ljust(32, b"\x00")
-    return struct.pack(ENT_FMT,
-        eid, etype, health, cs,
-        lat, lon, alt,        # degrees, degrees, metres MSL
-        phi, theta, psi,      # roll, pitch, heading (degrees)
-        speed,                # m/s
-        time.time_ns())       # or 0 to let the server timestamp it
-
-def send(entities, source_id=0):
-    global seq
-    hdr = struct.pack(HDR_FMT, MAGIC, len(entities), source_id, seq & 0xFFFFFFFF)
-    sock.sendto(hdr + b"".join(entities), ("127.0.0.1", 5555))
-    seq += 1
-
-# One jet at 3000 m, heading west, 5° nose up, 220 m/s:
-send([
-    make_entity(1, 1, "VIPER01", 36.85, 35.12, 3000.0,
-                phi=0.0, theta=5.0, psi=270.0, speed=220.0),
-])
-```
-
-A complete multi-entity scenario sender is in
-[`scripts/test_sender.py`](../scripts/test_sender.py):
-
-```sh
-python scripts/test_sender.py --host 127.0.0.1 --port 5555 --hz 10
-```
-
----
-
-## Example — C
-
-```c
-#include <string.h>
-#include <stdint.h>
+```cpp
+#include <cstdint>
 
 #pragma pack(push, 1)
 struct BatchHeader {
-    uint8_t  magic[4];
-    uint8_t  count;
-    uint8_t  source_id;
-    uint32_t sequence;
+    uint8_t  magic[4];     // {'D','B','F','1'}
+    uint8_t  count;        // number of EntityUpdate records following (1–14)
+    uint8_t  source_id;    // 0 if you only have one source
+    uint32_t sequence;     // increment each packet
 };
 struct EntityUpdate {
-    uint32_t id;
-    uint16_t type;
-    uint8_t  health;
-    char     callsign[32];
-    double   lat, lon, alt;
-    double   phi, theta, psi;
-    double   speed;
-    uint64_t time_ns;
+    uint32_t id;           // stable unique ID — never change it
+    uint16_t type;         // EntityTypeId (1 = jet, …)
+    uint8_t  health;       // 255 = full, 0 = destroyed
+    char     callsign[32]; // null-padded, up to 31 chars
+    double   lat, lon, alt;   // degrees, degrees, metres MSL
+    double   phi, theta, psi; // roll, pitch, heading (degrees)
+    double   speed;           // m/s (0 = unknown)
+    uint64_t time_ns;         // UNIX ns, or 0 to let the server timestamp it
 };
 #pragma pack(pop)
 
-// Build a one-entity datagram into `buf`; returns its length.
-size_t build_packet(uint8_t *buf, uint32_t seq) {
-    struct BatchHeader h = { {'D','B','F','1'}, 1, 0, seq };
-    struct EntityUpdate e = {0};
-    e.id = 1; e.type = 1; e.health = 255;
-    strncpy(e.callsign, "VIPER01", sizeof(e.callsign) - 1);
-    e.lat = 36.85; e.lon = 35.12; e.alt = 3000.0;
-    e.phi = 0.0;   e.theta = 5.0;  e.psi = 270.0;
-    e.speed = 220.0; e.time_ns = 0;   // 0 = server timestamps it
+static_assert(sizeof(BatchHeader)  == 10,  "BatchHeader must be 10 bytes");
+static_assert(sizeof(EntityUpdate) == 103, "EntityUpdate must be 103 bytes");
+```
 
-    memcpy(buf, &h, sizeof h);
-    memcpy(buf + sizeof h, &e, sizeof e);
-    return sizeof h + sizeof e;       // 10 + 103 = 113
+## Example — C++ (single entity)
+
+```cpp
+#include <cstring>
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+#else
+  #include <sys/socket.h>
+  #include <netinet/in.h>
+  #include <arpa/inet.h>
+  #include <unistd.h>
+#endif
+
+int main() {
+    int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
+    sockaddr_in dst{};
+    dst.sin_family = AF_INET;
+    dst.sin_port   = htons(5555);
+    ::inet_pton(AF_INET, "127.0.0.1", &dst.sin_addr);
+
+    uint32_t seq = 0;
+
+    EntityUpdate e{};
+    e.id = 1; e.type = 1 /*TYPE_JET*/; e.health = 255;
+    std::strncpy(e.callsign, "VIPER01", sizeof(e.callsign) - 1);
+    e.lat = 36.85; e.lon = 35.12; e.alt = 3000.0;   // metres MSL
+    e.phi = 0.0;   e.theta = 5.0;  e.psi = 270.0;    // heading West, 5° nose up
+    e.speed = 220.0;                                  // m/s
+    e.time_ns = 0;                                    // server timestamps it
+
+    BatchHeader h{ {'D','B','F','1'}, 1, 0, seq++ };
+
+    uint8_t buf[sizeof(h) + sizeof(e)];
+    std::memcpy(buf,             &h, sizeof(h));
+    std::memcpy(buf + sizeof(h), &e, sizeof(e));
+    ::sendto(sock, reinterpret_cast<const char*>(buf), sizeof(buf), 0,
+             reinterpret_cast<sockaddr*>(&dst), sizeof(dst));
 }
+```
+
+## Example — C++ (multiple entities per packet)
+
+Append up to **14** entities after one header, set `count`, and send the whole
+buffer as a single datagram.
+
+```cpp
+#include <vector>
+#include <cstring>
+
+// Sends one datagram containing every entity in `ents`.
+void send_batch(int sock, const sockaddr_in& dst,
+                const std::vector<EntityUpdate>& ents, uint32_t& seq) {
+    BatchHeader h{ {'D','B','F','1'},
+                   static_cast<uint8_t>(ents.size()), 0, seq++ };
+
+    std::vector<uint8_t> buf(sizeof(h) + ents.size() * sizeof(EntityUpdate));
+    std::memcpy(buf.data(), &h, sizeof(h));
+    std::memcpy(buf.data() + sizeof(h),
+                ents.data(), ents.size() * sizeof(EntityUpdate));
+
+    ::sendto(sock, reinterpret_cast<const char*>(buf.data()),
+             static_cast<int>(buf.size()), 0,
+             reinterpret_cast<const sockaddr*>(&dst), sizeof(dst));
+}
+
+// Helper to fill one record.
+EntityUpdate make_entity(uint32_t id, uint16_t type, const char* callsign,
+                         double lat, double lon, double alt,
+                         double phi, double theta, double psi,
+                         double speed, uint8_t health = 255) {
+    EntityUpdate e{};
+    e.id = id; e.type = type; e.health = health;
+    std::strncpy(e.callsign, callsign, sizeof(e.callsign) - 1);
+    e.lat = lat; e.lon = lon; e.alt = alt;
+    e.phi = phi; e.theta = theta; e.psi = psi;
+    e.speed = speed; e.time_ns = 0;
+    return e;
+}
+```
+
+> **Endianness:** the structs are sent in the host's native byte order. Debrief
+> expects little-endian (the overwhelmingly common case on x86/ARM). On a
+> big-endian host you would need to byte-swap each field before sending.
+
+## Demo sender (Python)
+
+A ready-to-run reference sender with a scripted multi-entity flight scenario
+ships as [`scripts/test_sender.py`](../scripts/test_sender.py) — handy for
+exercising the app without writing any code:
+
+```sh
+python scripts/test_sender.py --host 127.0.0.1 --port 5555 --hz 10
 ```
 
 ---

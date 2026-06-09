@@ -110,38 +110,73 @@ All scalar fields are now **doubles** (previously some were 32-bit floats), and 
 | 5 | Helicopter | Green sphere |
 | 6 | Ship | Grey box |
 
-### Python sender example
+### C++ sender example
 
-```python
-import socket, struct, time
+```cpp
+#include <cstdint>
+#include <cstring>
+#ifdef _WIN32
+  #include <winsock2.h>
+  #include <ws2tcpip.h>
+#else
+  #include <sys/socket.h>
+  #include <netinet/in.h>
+  #include <arpa/inet.h>
+  #include <unistd.h>
+#endif
 
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-seq  = 0
+#pragma pack(push, 1)
+struct BatchHeader {
+    uint8_t  magic[4];     // {'D','B','F','1'}
+    uint8_t  count;        // number of EntityUpdate records following (1–14)
+    uint8_t  source_id;    // 0 if you only have one source
+    uint32_t sequence;     // increment each packet
+};
+struct EntityUpdate {
+    uint32_t id;           // stable unique ID — never change it
+    uint16_t type;         // 1 = jet (see entity types)
+    uint8_t  health;       // 255 = full, 0 = destroyed
+    char     callsign[32]; // null-padded, up to 31 chars
+    double   lat, lon, alt;   // deg, deg, metres MSL
+    double   phi, theta, psi; // roll, pitch, heading (deg)
+    double   speed;           // m/s (0 = unknown)
+    uint64_t time_ns;         // UNIX ns, or 0 to let the server stamp it
+};
+#pragma pack(pop)
+static_assert(sizeof(BatchHeader)  == 10);
+static_assert(sizeof(EntityUpdate) == 103);
 
-def send(entities):
-    global seq
-    hdr  = struct.pack('<4sBBI', b'DBF1', len(entities), 0, seq & 0xFFFFFFFF)
-    body = b''.join(
-        struct.pack('<IHB32sdddddddQ',
-                    e['id'], e['type'], e['health'],
-                    e['callsign'].encode()[:31].ljust(32, b'\x00'),
-                    e['lat'], e['lon'], e['alt'],
-                    e['phi'], e['theta'], e['psi'],
-                    e['speed'], time.time_ns())
-        for e in entities
-    )
-    sock.sendto(hdr + body, ('127.0.0.1', 5555))
-    seq += 1
+int main() {
+    int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
+    sockaddr_in dst{};
+    dst.sin_family = AF_INET;
+    dst.sin_port   = htons(5555);
+    ::inet_pton(AF_INET, "127.0.0.1", &dst.sin_addr);
 
-send([{
-    'id': 1, 'type': 1, 'health': 255, 'callsign': 'VIPER01',
-    'lat': 36.85, 'lon': 35.12, 'alt': 3000.0,
-    'phi': 0.0, 'theta': 5.0, 'psi': 270.0,   # heading West, 5° nose up
-    'speed': 220.0,
-}])
+    uint32_t seq = 0;
+
+    EntityUpdate e{};
+    e.id = 1; e.type = 1 /*TYPE_JET*/; e.health = 255;
+    std::strncpy(e.callsign, "VIPER01", sizeof(e.callsign) - 1);
+    e.lat = 36.85; e.lon = 35.12; e.alt = 3000.0;  // metres MSL
+    e.phi = 0.0;   e.theta = 5.0;  e.psi = 270.0;   // heading West, 5° nose up
+    e.speed = 220.0;                                 // m/s
+    e.time_ns = 0;                                   // server timestamps it
+
+    BatchHeader h{ {'D','B','F','1'}, 1, 0, seq++ };
+
+    // Header + entities packed contiguously, sent as one datagram.
+    uint8_t buf[sizeof(h) + sizeof(e)];
+    std::memcpy(buf,             &h, sizeof(h));
+    std::memcpy(buf + sizeof(h), &e, sizeof(e));
+    ::sendto(sock, reinterpret_cast<const char*>(buf), sizeof(buf), 0,
+             reinterpret_cast<sockaddr*>(&dst), sizeof(dst));
+}
 ```
 
-A full demo sender with a multi-entity flight scenario is at [`scripts/test_sender.py`](scripts/test_sender.py):
+See **[`docs/PROTOCOL.md`](docs/PROTOCOL.md)** for a multi-entity C++ sender and
+the full field reference. A ready-to-run Python demo with a scripted flight
+scenario is at [`scripts/test_sender.py`](scripts/test_sender.py):
 
 ```sh
 python scripts/test_sender.py --host 127.0.0.1 --port 5555 --hz 10
