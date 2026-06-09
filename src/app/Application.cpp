@@ -79,6 +79,11 @@ Application::~Application() {
     if (!cfg_.demo_mode) udp_receiver_.stop();
     recorder_.stop();
     ConfigManager::save_config(ui_.state(), "debrief_config.yaml");
+    // Free GL resources (models/meshes) while the GL context is still alive.
+    // The AssetManager member destructor runs after this body — i.e. after
+    // CloseWindow() has destroyed the context — so unloading there would make GL
+    // calls on a dead context and crash. unload_all() is idempotent.
+    assets_.unload_all();
     ImPlot::DestroyContext();
     rlImGuiShutdown();
     CloseWindow();
@@ -232,12 +237,14 @@ void Application::init_ui_callbacks() {
 }
 
 void Application::clear_all_entities() {
-    // Destruct every spawned entity through a query. flecs automatically defers
-    // structural changes made inside each(), so this is safe to call at any time
-    // and does not depend on the cached handles in entity_map_ being valid (a
-    // stale/duplicate handle in the old manual loop could fault on destruct()).
-    world_.query<ecs::EntityMeta>()
-        .each([](flecs::entity e, ecs::EntityMeta&) { e.destruct(); });
+    // Destruct every spawned entity from our own handle map — NOT from inside a
+    // flecs query each(): flecs locks the matched table during iteration, and
+    // deleting from a locked table aborts in flecs_table_delete. Wrap the deletes
+    // in defer so they're queued and flushed at a safe (unlocked) point.
+    world_.defer_begin();
+    for (auto& [key, e] : entity_map_)
+        if (e.is_valid() && world_.is_alive(e)) e.destruct();
+    world_.defer_end();
 
     entity_map_.clear();
     store_.clear();
