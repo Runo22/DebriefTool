@@ -23,7 +23,7 @@ struct EntityMeta {
     uint32_t  source_id  = 0;
     uint32_t  entity_id  = 0;
     uint16_t  type       = 0;   // net::EntityTypeId
-    char      callsign[8]{};
+    char      callsign[net::kCallsignLen]{};  // null-terminated, up to 31 chars
     bool      active     = true;
 };
 

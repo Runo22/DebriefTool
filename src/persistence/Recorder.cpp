@@ -224,6 +224,10 @@ bool Recorder::load_into(const std::filesystem::path& path,
     FileHeader hdr{};
     f.read(reinterpret_cast<char*>(&hdr), sizeof(hdr));
     if (!f || hdr.magic != kFileMagic) return false;
+    // v2 widened the callsign field (8 -> 32), changing EntitySnapshot size.
+    // Older recordings have an incompatible layout, so reject them rather than
+    // reading garbage.
+    if (hdr.version != kFileVersion) return false;
 
     SceneOrigin origin{};
     f.read(reinterpret_cast<char*>(&origin), sizeof(origin));

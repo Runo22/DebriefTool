@@ -47,6 +47,11 @@ private:
     void render();
     void render_3d();
     void draw_terrain();
+
+    // Procedural terrain surface height at a world (x,z). Mirrors the formula in
+    // draw_terrain() so ground markers/drop-lines can sit on the terrain even when
+    // it has relief. Returns 0 when terrain is disabled.
+    float terrain_height_at(float wx, float wz) const;
     void render_ui();
     void handle_input(float dt);
     void update_camera_state(float dt);
@@ -56,6 +61,13 @@ private:
 
     // Syncs ECS entities to the selected playback timestamp using TelemetryStore
     void sync_ecs_to_playback(uint64_t target_ns);
+
+    // Destroys every tracked entity and clears the telemetry store, returning to
+    // a clean live state (also resets the ENU origin so it re-seeds on next data).
+    void clear_all_entities();
+
+    // Restarts the UDP receiver on a new bind address / port (from the UI).
+    void apply_network_settings(const std::string& bind_addr, uint16_t port);
 
     // Lazy-set scene origin from first received position; converts subsequent
     // lat/lon/alt to ENU metres and fills state.position[].

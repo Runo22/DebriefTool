@@ -25,16 +25,23 @@ namespace debrief {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // WGS84 flat-earth approximation — accurate to <1 m within 500 km of origin.
+//
+// Horizontal (East/North) is measured relative to the scene origin so the scene
+// stays near the world origin for float precision. Altitude (Up) is kept as the
+// ABSOLUTE metres-above-sea-level value, NOT relative to the first entity — this
+// way every entity reports its true altitude regardless of which one arrived
+// first (previously the first entity defined alt0, so it always read 0 m and
+// later entities read alt-relative-to-it).
 static void lat_lon_to_enu(
-    double lat, double lon, float alt,
-    double lat0, double lon0, float alt0,
+    double lat, double lon, double alt,
+    double lat0, double lon0, double /*alt0*/,
     float* x, float* y, float* z)
 {
     constexpr double kMetPerDeg = 111319.9;
     const double cos_lat0 = std::cos(lat0 * M_PI / 180.0);
     *x = static_cast<float>((lon - lon0) * cos_lat0 * kMetPerDeg);  // East
-    *y = alt - alt0;                                                  // Up
-    *z = -static_cast<float>((lat - lat0) * kMetPerDeg);             // -North
+    *y = static_cast<float>(alt);                                   // Up (absolute MSL)
+    *z = -static_cast<float>((lat - lat0) * kMetPerDeg);            // -North
 }
 
 // Aviation Euler → Raylib quaternion.
@@ -212,7 +219,42 @@ void Application::init_ui_callbacks() {
         if (assets_.load(path, path, 1.0f))
             assets_.map_type(type_id, path);
     };
+    cbs.on_clear_entities = [this] { clear_all_entities(); };
+    cbs.on_apply_network  = [this](std::string addr, uint16_t port) {
+        apply_network_settings(addr, port);
+    };
     ui_.set_callbacks(std::move(cbs));
+
+    // Seed the network panel fields from the active configuration.
+    ui_.state().listen_port = cfg_.udp_port;
+    snprintf(ui_.state().bind_addr, sizeof(ui_.state().bind_addr), "%s",
+             cfg_.bind_addr.c_str());
+}
+
+void Application::clear_all_entities() {
+    for (auto& [key, e] : entity_map_)
+        if (e.is_valid() && world_.is_alive(e)) e.destruct();
+    entity_map_.clear();
+
+    store_.clear();
+    live_states_.clear();
+    ui_.state().selected_entity = {};
+    origin_set_ = false;
+    playback_.stop();   // return to live mode
+    TraceLog(LOG_INFO, "Cleared all entities and telemetry store");
+}
+
+void Application::apply_network_settings(const std::string& bind_addr, uint16_t port) {
+    if (cfg_.demo_mode) return;   // demo has no live socket
+    udp_receiver_.stop();
+    cfg_.bind_addr = bind_addr;
+    cfg_.udp_port  = port;
+    if (udp_receiver_.start(cfg_.bind_addr, cfg_.udp_port))
+        TraceLog(LOG_INFO, "UDP receiver now listening on %s:%u",
+                 cfg_.bind_addr.c_str(), cfg_.udp_port);
+    else
+        TraceLog(LOG_WARNING, "Failed to bind UDP %s:%u",
+                 cfg_.bind_addr.c_str(), cfg_.udp_port);
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
@@ -323,7 +365,7 @@ flecs::entity Application::get_or_create_entity(const net::EntityState& state) {
     if (auto it = entity_map_.find(key); it != entity_map_.end())
         return it->second;
 
-    char ename[32];
+    char ename[64];
     snprintf(ename, sizeof(ename), "%s%u",
              state.callsign[0] ? state.callsign : "ent", state.entity_id);
 
@@ -360,7 +402,8 @@ flecs::entity Application::get_or_create_entity(const net::EntityState& state) {
         .set<ecs::RenderModel>(rm);
 
     auto& meta = e.get_mut<ecs::EntityMeta>();
-    std::memcpy(meta.callsign, state.callsign, 8);
+    std::memcpy(meta.callsign, state.callsign, net::kCallsignLen);
+    meta.callsign[net::kCallsignLen - 1] = '\0';
 
     entity_map_.emplace(key, e);
     TraceLog(LOG_INFO, "Spawned entity '%s' type=%d", ename, state.entity_type);
@@ -627,26 +670,40 @@ void Application::render_3d() {
                 DrawCylinderWires(rp, 0.0f, sz, sz * 1.5f, 4, {200, 240, 255, 200});
             }
 
-            // Selection highlight (using exaggerated position rp)
+            // Ground height directly beneath this entity (so markers/drop-lines
+            // track terrain relief instead of sinking into hills).
+            const float gh = terrain_height_at(rp.x, rp.z);
+
+            // Selection highlight (using exaggerated position rp).
+            // Deliberately does NOT draw a wire sphere around the model — that
+            // obscured the body and made rotation hard to read. Instead we use a
+            // floating chevron above the entity plus ground rings on the terrain,
+            // both of which leave the model fully visible.
             if (ui_.state().selected_entity == e) {
                 float sc    = ui_.state().entity_3d_scale;
-                float sel_r = 180.0f * sc * 0.05f;
-                DrawSphereWires(rp, sel_r, 8, 8, YELLOW);
-                float bob  = sinf((float)GetTime() * 3.0f) * sel_r * 0.3f;
-                Vector3 dp = {rp.x, rp.y + sel_r * 2.5f + bob, rp.z};
-                float ds   = sel_r * 0.6f;
+                float mk    = std::max(60.0f, 180.0f * sc * 0.05f);   // marker size
+
+                // Floating chevron (diamond) hovering above the model.
+                float bob  = sinf((float)GetTime() * 3.0f) * mk * 0.3f;
+                Vector3 dp = {rp.x, rp.y + mk * 2.5f + bob, rp.z};
+                float ds   = mk * 0.6f;
                 DrawCylinderWires(dp, 0.f, ds, ds*1.4f, 4, YELLOW);
                 DrawCylinderWires({dp.x, dp.y - ds*1.4f, dp.z}, ds, 0.f, ds*1.4f, 4, YELLOW);
-                DrawCircle3D({rp.x, 2.f, rp.z}, 600.f,  {1,0,0}, 90.f, {255,220,0,120});
-                DrawCircle3D({rp.x, 2.f, rp.z}, 1200.f, {1,0,0}, 90.f, {255,220,0,60});
-                DrawCircle3D({rp.x, 2.f, rp.z}, 2400.f, {1,0,0}, 90.f, {255,220,0,25});
+
+                // Bright vertical tie-line from the chevron down to the terrain.
+                DrawLine3D({rp.x, gh, rp.z}, dp, {255, 220, 0, 130});
+
+                // Ground rings on the terrain surface (visible over relief).
+                DrawCircle3D({rp.x, gh + 4.f, rp.z}, 600.f,  {1,0,0}, 90.f, {255,220,0,160});
+                DrawCircle3D({rp.x, gh + 4.f, rp.z}, 1200.f, {1,0,0}, 90.f, {255,220,0,80});
+                DrawCircle3D({rp.x, gh + 4.f, rp.z}, 2400.f, {1,0,0}, 90.f, {255,220,0,35});
             }
 
-            // Altitude drop line from ground to exaggerated entity position
-            if (rp.y > 10.0f) {
-                DrawLine3D({rp.x, 2.f, rp.z}, rp, {0, 190, 255, 160});
-                float sr = std::max(50.f, pos.v.y * 0.03f);
-                DrawCircle3D({rp.x, 2.f, rp.z}, sr, {1,0,0}, 90.f, {0, 190, 255, 100});
+            // Altitude drop line from the terrain up to the entity position.
+            if (rp.y - gh > 10.0f) {
+                DrawLine3D({rp.x, gh, rp.z}, rp, {0, 190, 255, 160});
+                float sr = std::max(50.f, (pos.v.y - gh) * 0.03f);
+                DrawCircle3D({rp.x, gh + 2.f, rp.z}, sr, {1,0,0}, 90.f, {0, 190, 255, 100});
             }
 
             // Velocity vector (in exaggerated space)
@@ -700,8 +757,11 @@ void Application::render_3d() {
 
                 const char* lbl = meta.callsign[0]
                     ? meta.callsign : TextFormat("#%u", meta.entity_id);
+                // Altitude shown in feet (primary), with metres in parentheses.
                 int alt_ft = (int)(pos.v.y * 3.28084f);
-                const char* alt = (alt_ft > 50) ? TextFormat("%dft", alt_ft) : nullptr;
+                int alt_m  = (int)(pos.v.y);
+                const char* alt = (alt_ft > 50) ? TextFormat("%d ft (%d m)", alt_ft, alt_m)
+                                                : nullptr;
 
                 const int fs = 15, afs = 12;
                 int tx = (int)sp.x + 9, ty = (int)sp.y - 8;
@@ -789,6 +849,16 @@ void Application::handle_input(float /*dt*/) {
                 ? flecs::entity{} : best_ent;
         }
     }
+}
+
+float Application::terrain_height_at(float wx, float wz) const {
+    const auto& state = ui_.state();
+    if (state.terrain_mode == 0) return 0.0f;
+    float h = 800.0f * sinf(wx * 0.00006f) * cosf(wz * 0.00006f)
+            + 350.0f * sinf(wx * 0.00015f + 0.8f) * sinf(wz * 0.00012f + 1.2f)
+            + 120.0f * cosf(wx * 0.0004f + 2.0f)  * cosf(wz * 0.0003f)
+            +  40.0f * sinf(wx * 0.001f)           * sinf(wz * 0.001f);
+    return h * state.terrain_height_scale;
 }
 
 void Application::draw_terrain() {

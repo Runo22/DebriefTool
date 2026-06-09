@@ -24,6 +24,8 @@ struct UICallbacks {
     std::function<void(std::string)>    on_load_file;
     std::function<void(std::string)>    on_load_csv;
     std::function<void(uint16_t, std::string)> on_load_model;
+    std::function<void()>               on_clear_entities;     // wipe all tracks
+    std::function<void(std::string, uint16_t)> on_apply_network; // bind addr, port
 };
 
 struct UIState {
@@ -76,6 +78,9 @@ struct UIState {
 
     // Render settings
     float far_clip_plane = 2000000.0f;
+
+    // Timeline / altitude chart panel height (resizable from Settings → Display)
+    float timeline_height = 210.0f;       // total height of the bottom panel
 
     // Terrain settings
     int   terrain_mode = 3; // 0=None, 1=Wireframe, 2=Solid, 3=Both
