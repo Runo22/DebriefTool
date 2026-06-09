@@ -108,6 +108,13 @@ set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/yaml-cpp)
 
+# Treat yaml-cpp's headers as SYSTEM headers for consumers so their warnings are
+# never escalated by our strict diagnostics (-Wall/-Wextra, /W4 /WX) when pulled
+# into our translation units. Complements the pragma guard in Config.cpp.
+if(TARGET yaml-cpp)
+    set_target_properties(yaml-cpp PROPERTIES SYSTEM ON)
+endif()
+
 # ── Main executable ────────────────────────────────────────────────────────────
 file(GLOB_RECURSE DEBRIEF_SRC "src/*.cpp" "src/*.hpp")
 
