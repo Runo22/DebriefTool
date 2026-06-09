@@ -306,7 +306,12 @@ void DebriefUI::draw_entity_list(const flecs::world& world)
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.7f, 1.0f, 0.8f));
             ImGui::TextUnformatted("TRACK LIST");
             ImGui::PopStyleColor();
-            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 48.0f);
+            // Right-align a small Clear button on the same row. SameLine() takes
+            // an absolute X from the content start, so use the content region's
+            // right edge minus the actual button width (robust to label/padding).
+            const float clear_w = ImGui::CalcTextSize("Clear").x
+                                + ImGui::GetStyle().FramePadding.x * 2.0f;
+            ImGui::SameLine(ImGui::GetContentRegionMax().x - clear_w);
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.18f, 0.20f, 0.9f));
             ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.80f, 0.25f, 0.28f, 1.0f));
             if (ImGui::SmallButton("Clear") && cbs_.on_clear_entities)
@@ -471,7 +476,8 @@ void DebriefUI::draw_inspector(const flecs::world& world)
     if (meta) {
         ImGui::Text("Type:     %s  %s", entity_type_icon(meta->type), entity_type_name(meta->type));
         ImGui::Text("ID:       %u/%u", meta->source_id, meta->entity_id);
-        if (meta->callsign[0]) ImGui::Text("Callsign: %.31s", meta->callsign);
+        if (meta->callsign[0]) ImGui::Text("Callsign: %.*s",
+                                           net::kCallsignLen - 1, meta->callsign);
         ImGui::Text("Active:   %s", meta->active ? "Yes" : "DESTROYED");
     }
     if (pos) ImGui::Text("Pos: %.1f, %.1f, %.1f", pos->v.x, pos->v.y, pos->v.z);

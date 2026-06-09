@@ -113,17 +113,28 @@ void UdpReceiver::recv_loop() {
         ParsedFrame& frame = *result;
 
         // Sequence gap detection per source (recv thread only — no lock).
-        // The 32-bit sequence wraps cleanly via unsigned arithmetic, so a simple
-        // delta works without false positives at wrap. A sender restart (sequence
-        // jumping back to a low value) is treated as a resync, not a gap, so the
-        // counter doesn't flood when a source is restarted.
+        // `it->second` tracks the highest in-order sequence seen. The signed
+        // 32-bit difference interprets wrap correctly (e.g. 0xFFFFFFFF -> 0 is +1):
+        //   diff == 1  : the expected next packet — advance.
+        //   diff  > 1  : forward jump — (diff-1) packets were dropped.
+        //   diff == 0  : duplicate — ignore.
+        //   diff  < 0  : a late/out-of-order packet — ignore WITHOUT rewinding the
+        //                tracker, so a following in-order packet isn't miscounted.
+        //   diff much < 0 : far in the past ⇒ the sender restarted — resync.
+        // This avoids the false gaps that arise from moving the tracker backwards.
+        constexpr int32_t kReorderWindow = 4096; // tolerated out-of-order distance
         auto [it, inserted] = last_seq_.emplace(frame.source_id, frame.sequence);
         if (!inserted) {
-            const uint32_t delta = frame.sequence - it->second; // wraps mod 2^32
-            const bool restart   = frame.sequence < it->second && delta > 0x80000000u;
-            if (delta != 1 && !restart)
-                ++stats_.sequence_gaps;
-            it->second = frame.sequence;
+            const int32_t diff = static_cast<int32_t>(frame.sequence - it->second);
+            if (diff == 1) {
+                it->second = frame.sequence;
+            } else if (diff > 1) {
+                stats_.sequence_gaps += static_cast<uint64_t>(diff - 1);
+                it->second = frame.sequence;
+            } else if (diff < -kReorderWindow) {
+                it->second = frame.sequence;   // sender restart — resync, no gap
+            }
+            // diff == 0 (duplicate) or small-negative (reorder): keep highest seq.
         }
 
         // Non-blocking push; if queue is full the main thread is lagging.
