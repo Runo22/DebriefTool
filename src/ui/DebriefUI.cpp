@@ -5,6 +5,7 @@
 #include <rlImGui.h>
 #include <raylib.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
