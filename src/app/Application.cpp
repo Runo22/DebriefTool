@@ -232,10 +232,14 @@ void Application::init_ui_callbacks() {
 }
 
 void Application::clear_all_entities() {
-    for (auto& [key, e] : entity_map_)
-        if (e.is_valid() && world_.is_alive(e)) e.destruct();
-    entity_map_.clear();
+    // Destruct every spawned entity through a query. flecs automatically defers
+    // structural changes made inside each(), so this is safe to call at any time
+    // and does not depend on the cached handles in entity_map_ being valid (a
+    // stale/duplicate handle in the old manual loop could fault on destruct()).
+    world_.query<ecs::EntityMeta>()
+        .each([](flecs::entity e, ecs::EntityMeta&) { e.destruct(); });
 
+    entity_map_.clear();
     store_.clear();
     live_states_.clear();
     ui_.state().selected_entity = {};
