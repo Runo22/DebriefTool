@@ -1,5 +1,28 @@
 #include "Config.hpp"
+
+// yaml-cpp is third-party but gets pulled into this translation unit, which is
+// compiled with our strict warnings-as-errors (/W4 /WX on MSVC). Its headers
+// (e.g. node/ptr.h) trip those warnings and break the build. Silence diagnostics
+// originating from the yaml-cpp headers only — our own code below stays strict.
+#if defined(_MSC_VER)
+#  pragma warning(push, 0)
+#elif defined(__clang__)
+#  pragma clang diagnostic push
+#  pragma clang diagnostic ignored "-Weverything"
+#elif defined(__GNUC__)
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wall"
+#  pragma GCC diagnostic ignored "-Wextra"
+#endif
 #include <yaml-cpp/yaml.h>
+#if defined(_MSC_VER)
+#  pragma warning(pop)
+#elif defined(__clang__)
+#  pragma clang diagnostic pop
+#elif defined(__GNUC__)
+#  pragma GCC diagnostic pop
+#endif
+
 #include <fstream>
 #include <iostream>
 
