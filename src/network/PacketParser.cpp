@@ -47,7 +47,7 @@ PacketParser::parse(std::span<const std::byte> buf) noexcept
 
         // Callsign — copy and ensure null-termination
         std::memcpy(s.callsign, wire.callsign, sizeof(wire.callsign));
-        s.callsign[7] = '\0';
+        s.callsign[kCallsignLen - 1] = '\0';
 
         s.lat_deg   = wire.lat;
         s.lon_deg   = wire.lon;

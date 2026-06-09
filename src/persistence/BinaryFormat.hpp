@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <array>
+#include "../network/Packet.hpp"   // net::kCallsignLen
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Debrief Session File Format  —  ".dbr"
@@ -29,7 +30,7 @@
 namespace debrief::persist {
 
 inline constexpr uint64_t kFileMagic   = 0x5242454244424400ULL; // "DEBRIEF\0"
-inline constexpr uint32_t kFileVersion = 1;
+inline constexpr uint32_t kFileVersion = 2;  // v2: callsign widened 8 -> 32 bytes
 inline constexpr uint32_t kIndexInterval = 100; // one index entry every N frames
 
 #pragma pack(push, 1)
@@ -70,10 +71,10 @@ struct EntitySnapshot {
     float    orientation[4];
     float    velocity[3];
     uint8_t  health;
-    char     callsign[8];
-    uint8_t  pad;            // align to 4 bytes
+    char     callsign[net::kCallsignLen];   // v2: 32 bytes (was 8)
+    uint8_t  pad;            // keep struct layout explicit
 };
-static_assert(sizeof(EntitySnapshot) == 4+2+2+12+16+12+1+8+1); // 58 bytes
+static_assert(sizeof(EntitySnapshot) == 4+2+2+12+16+12+1+32+1); // 82 bytes
 
 // One entry per kIndexInterval frames, stored at end of file.
 struct IndexEntry {

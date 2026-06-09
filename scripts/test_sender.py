@@ -16,13 +16,15 @@ import struct
 import time
 
 # ── Wire format (must match src/network/Packet.hpp) ───────────────────────────
-# BatchHeader: 4s B B H   = magic, count, source_id, sequence
-# EntityUpdate: I H B 5s  dd f  fff  f Q
+# BatchHeader:  4s B B I            = magic, count, source_id, sequence (uint32)
+# EntityUpdate: I H B 32s ddd ddd d Q
 #               id type health callsign  lat lon alt  phi theta psi  speed time_ns
+# All angle/position/speed fields are doubles. Callsign holds up to 31 chars.
 
 MAGIC = b'DBF1'
-HDR_FMT  = '<4sBBH'            # 8 bytes
-ENT_FMT  = '<IHB5sddfffffQ'    # 56 bytes
+HDR_FMT  = '<4sBBI'             # 10 bytes
+ENT_FMT  = '<IHB32sdddddddQ'    # 103 bytes
+CALLSIGN_LEN = 32
 
 TYPE_JET     = 1
 TYPE_MISSILE = 2
@@ -30,7 +32,7 @@ TYPE_GROUND  = 4
 
 def make_entity(eid, etype, callsign, lat, lon, alt,
                 phi=0.0, theta=0.0, psi=0.0, speed=0.0, health=255):
-    cs = callsign.encode()[:4].ljust(5, b'\x00')
+    cs = callsign.encode()[:CALLSIGN_LEN - 1].ljust(CALLSIGN_LEN, b'\x00')
     return struct.pack(ENT_FMT,
         eid, etype, health, cs,
         lat, lon, alt,
@@ -39,7 +41,7 @@ def make_entity(eid, etype, callsign, lat, lon, alt,
         time.time_ns())
 
 def make_packet(entities, source_id=0, seq=0):
-    hdr = struct.pack(HDR_FMT, MAGIC, len(entities), source_id, seq & 0xFFFF)
+    hdr = struct.pack(HDR_FMT, MAGIC, len(entities), source_id, seq & 0xFFFFFFFF)
     return hdr + b''.join(entities)
 
 # ── Scenario helpers ──────────────────────────────────────────────────────────

@@ -4,6 +4,7 @@
 #include <implot.h>
 #include <rlImGui.h>
 #include <raylib.h>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -215,8 +216,9 @@ void DebriefUI::draw_timeline(PlaybackController& pb,
     if (t_start == 0 && t_end == 0) return;
 
     const float h = GetScreenHeight();
-    ImGui::SetNextWindowPos({0, h - 130.0f});
-    ImGui::SetNextWindowSize({static_cast<float>(GetScreenWidth()), 130.0f});
+    const float panel_h = std::clamp(state_.timeline_height, 110.0f, h * 0.6f);
+    ImGui::SetNextWindowPos({0, h - panel_h});
+    ImGui::SetNextWindowSize({static_cast<float>(GetScreenWidth()), panel_h});
     ImGui::Begin("##timeline", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                  ImGuiWindowFlags_NoScrollbar);
@@ -262,14 +264,19 @@ void DebriefUI::draw_timeline(PlaybackController& pb,
     format_duration(cur_off, buf, sizeof(buf));
     ImGui::Text("  T+%s", buf);
 
-    // ImPlot altitude area-shaded chart (selected entity)
-    if (ImPlot::BeginPlot("##alt", {-1, 70},
+    // ImPlot altitude area-shaded chart (selected entity).
+    // Fills the remaining height of the panel so resizing the panel (Settings →
+    // Display → Timeline Height) gives the chart a proportionally larger view.
+    ImGui::Spacing();
+    if (plot_count_ == 0)
+        ImGui::TextDisabled("Altitude (ft) — select an entity to plot its profile");
+    if (ImPlot::BeginPlot("##alt", {-1, -1},
                           ImPlotFlags_NoTitle | ImPlotFlags_NoMenus |
                           ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText))
     {
         // AutoFit both axes so the trace always fills the plot as data scrolls in.
-        ImPlot::SetupAxes("Time", "Alt",
-                          ImPlotAxisFlags_NoLabel | ImPlotAxisFlags_AutoFit,
+        ImPlot::SetupAxes("Time (s)", "Alt (ft)",
+                          ImPlotAxisFlags_AutoFit,
                           ImPlotAxisFlags_AutoFit);
         if (plot_count_ > 0) {
             ImPlotSpec spec;
@@ -299,6 +306,14 @@ void DebriefUI::draw_entity_list(const flecs::world& world)
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.7f, 1.0f, 0.8f));
             ImGui::TextUnformatted("TRACK LIST");
             ImGui::PopStyleColor();
+            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 48.0f);
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.18f, 0.20f, 0.9f));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.80f, 0.25f, 0.28f, 1.0f));
+            if (ImGui::SmallButton("Clear") && cbs_.on_clear_entities)
+                cbs_.on_clear_entities();
+            ImGui::PopStyleColor(2);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Remove all tracks and clear the telemetry buffer");
             ImGui::Separator();
 
             auto q = world.query<const EntityMeta, const Position, const Velocity>();
@@ -456,14 +471,15 @@ void DebriefUI::draw_inspector(const flecs::world& world)
     if (meta) {
         ImGui::Text("Type:     %s  %s", entity_type_icon(meta->type), entity_type_name(meta->type));
         ImGui::Text("ID:       %u/%u", meta->source_id, meta->entity_id);
-        if (meta->callsign[0]) ImGui::Text("Callsign: %.8s", meta->callsign);
+        if (meta->callsign[0]) ImGui::Text("Callsign: %.31s", meta->callsign);
         ImGui::Text("Active:   %s", meta->active ? "Yes" : "DESTROYED");
     }
     if (pos) ImGui::Text("Pos: %.1f, %.1f, %.1f", pos->v.x, pos->v.y, pos->v.z);
     if (vel) {
         float spd = sqrtf(vel->v.x*vel->v.x + vel->v.y*vel->v.y + vel->v.z*vel->v.z);
         ImGui::Text("Speed:    %.1f m/s (%.0f kt)", spd, spd * 1.944f);
-        if (pos) ImGui::Text("Altitude: %.0f m", pos->v.y);
+        // Altitude in feet (primary), metres in parentheses.
+        if (pos) ImGui::Text("Altitude: %.0f ft (%.0f m)", pos->v.y * 3.28084f, pos->v.y);
     }
 
     // Update ImPlot sample buffer — reset on entity switch, cap at kPlotWindow
@@ -474,7 +490,7 @@ void DebriefUI::draw_inspector(const flecs::world& world)
     if (pos && vel && plot_count_ < kPlotWindow) {
         float spd = sqrtf(vel->v.x*vel->v.x + vel->v.y*vel->v.y + vel->v.z*vel->v.z);
         plot_time_ [plot_count_] = static_cast<float>(ImGui::GetTime());
-        plot_alt_  [plot_count_] = pos->v.y;
+        plot_alt_  [plot_count_] = pos->v.y * 3.28084f;   // feet, matches "Alt (ft)" axis
         plot_speed_[plot_count_] = spd;
         ++plot_count_;
     }
@@ -591,52 +607,110 @@ void DebriefUI::draw_minimap(const flecs::world& world)
 void DebriefUI::draw_settings_window() {
     if (!state_.show_settings_window) return;
 
-    ImGui::SetNextWindowSize({300.0f, 400.0f}, ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize({340.0f, 440.0f}, ImGuiCond_FirstUseEver);
     if (ImGui::Begin(ICON_FA_GEAR " Settings", &state_.show_settings_window)) {
-        
-        if (ImGui::CollapsingHeader("Session Files", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::TextDisabled("Open a recorded .dbr session or import a CSV log.");
-            ImGui::SetNextItemWidth(-1.0f);
-            ImGui::InputTextWithHint("##load_path", "path to .dbr or .csv file",
-                                     state_.load_path, sizeof(state_.load_path));
-            bool has_path = state_.load_path[0] != '\0';
-            ImGui::BeginDisabled(!has_path);
-            if (ImGui::Button(ICON_FA_FOLDER_OPEN " Open .dbr")) {
-                if (cbs_.on_load_file) cbs_.on_load_file(state_.load_path);
+
+        if (ImGui::BeginTabBar("SettingsTabs")) {
+
+            // ── Network ───────────────────────────────────────────────────────
+            if (ImGui::BeginTabItem("Network")) {
+                ImGui::TextDisabled("UDP telemetry input. Apply restarts the listener.");
+                ImGui::Spacing();
+
+                ImGui::Text("Bind Address");
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::InputText("##bind_addr", state_.bind_addr, sizeof(state_.bind_addr));
+                ImGui::TextDisabled("0.0.0.0 = all interfaces");
+
+                ImGui::Spacing();
+                ImGui::Text("Listen Port");
+                int port = static_cast<int>(state_.listen_port);
+                ImGui::SetNextItemWidth(-1.0f);
+                if (ImGui::InputInt("##listen_port", &port)) {
+                    port = std::clamp(port, 1, 65535);
+                    state_.listen_port = static_cast<uint16_t>(port);
+                }
+
+                ImGui::Spacing();
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.45f, 0.30f, 0.9f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.6f, 0.4f, 1.0f));
+                if (ImGui::Button("Apply / Restart Listener", {-1, 0}) && cbs_.on_apply_network)
+                    cbs_.on_apply_network(state_.bind_addr, state_.listen_port);
+                ImGui::PopStyleColor(2);
+                ImGui::EndTabItem();
             }
-            ImGui::SameLine();
-            if (ImGui::Button(ICON_FA_FILE_IMPORT " Import CSV")) {
-                if (cbs_.on_load_csv) cbs_.on_load_csv(state_.load_path);
+
+            // ── Session Files ─────────────────────────────────────────────────
+            if (ImGui::BeginTabItem("Files")) {
+                ImGui::TextDisabled("Open a recorded .dbr session or import a CSV log.");
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::InputTextWithHint("##load_path", "path to .dbr or .csv file",
+                                         state_.load_path, sizeof(state_.load_path));
+                bool has_path = state_.load_path[0] != '\0';
+                ImGui::BeginDisabled(!has_path);
+                if (ImGui::Button(ICON_FA_FOLDER_OPEN " Open .dbr")) {
+                    if (cbs_.on_load_file) cbs_.on_load_file(state_.load_path);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button(ICON_FA_FILE_IMPORT " Import CSV")) {
+                    if (cbs_.on_load_csv) cbs_.on_load_csv(state_.load_path);
+                }
+                ImGui::EndDisabled();
+
+                ImGui::Separator();
+                ImGui::TextDisabled("Remove all current tracks and clear the buffer.");
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f, 0.18f, 0.20f, 0.9f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.80f, 0.25f, 0.28f, 1.0f));
+                if (ImGui::Button("Clear All Entities", {-1, 0}) && cbs_.on_clear_entities)
+                    cbs_.on_clear_entities();
+                ImGui::PopStyleColor(2);
+                ImGui::EndTabItem();
             }
-            ImGui::EndDisabled();
+
+            // ── Display & Overlays ────────────────────────────────────────────
+            if (ImGui::BeginTabItem("Display")) {
+                ImGui::Checkbox("Callsign Labels",  &state_.show_labels);
+                ImGui::Checkbox("Trail Lines",      &state_.show_trails);
+                ImGui::Checkbox("Ribbon Mode",      &state_.ribbon_trails);
+                ImGui::Checkbox("Velocity Vectors", &state_.show_velocity_vec);
+                ImGui::Checkbox("Minimap",          &state_.show_minimap);
+                ImGui::Checkbox("Network Stats",    &state_.show_stats);
+
+                ImGui::Separator();
+                ImGui::Text("Timeline / Altitude Chart Height");
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::SliderFloat("##TimelineH", &state_.timeline_height,
+                                   120.0f, 500.0f, "%.0f px");
+                ImGui::EndTabItem();
+            }
+
+            // ── Graphics & Engine ─────────────────────────────────────────────
+            if (ImGui::BeginTabItem("Graphics")) {
+                ImGui::Text("Far Clip Plane (Render Distance)");
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::SliderFloat("##FarClip", &state_.far_clip_plane, 10000.0f, 2000000.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
+
+                ImGui::Text("Terrain Mode");
+                const char* terrain_modes[] = { "None", "Wireframe", "Solid", "Both" };
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::Combo("##SettingsTerrainMode", &state_.terrain_mode, terrain_modes, IM_ARRAYSIZE(terrain_modes));
+
+                ImGui::Text("Terrain Height Scale");
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::SliderFloat("##SettingsHills", &state_.terrain_height_scale, 0.0f, 4.0f, "%.1fx");
+
+                ImGui::Separator();
+                ImGui::Text("Altitude Exaggeration");
+                ImGui::SetNextItemWidth(-1.0f);
+                ImGui::SliderFloat("##SettingsAltExag", &state_.altitude_exaggerate, 1.0f, 20.0f, "%.1fx");
+                ImGui::EndTabItem();
+            }
+
+            ImGui::EndTabBar();
         }
 
-        if (ImGui::CollapsingHeader("Display & Overlays", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::Checkbox("Callsign Labels",  &state_.show_labels);
-            ImGui::Checkbox("Trail Lines",      &state_.show_trails);
-            ImGui::Checkbox("Ribbon Mode",      &state_.ribbon_trails);
-            ImGui::Checkbox("Velocity Vectors", &state_.show_velocity_vec);
-            ImGui::Checkbox("Minimap",          &state_.show_minimap);
-            ImGui::Checkbox("Network Stats",    &state_.show_stats);
-        }
-
-        if (ImGui::CollapsingHeader("Graphics & Engine", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::Text("Far Clip Plane (Render Distance)");
-            ImGui::SliderFloat("##FarClip", &state_.far_clip_plane, 10000.0f, 2000000.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
-            
-            ImGui::Text("Terrain Mode");
-            const char* terrain_modes[] = { "None", "Wireframe", "Solid", "Both" };
-            ImGui::Combo("##SettingsTerrainMode", &state_.terrain_mode, terrain_modes, IM_ARRAYSIZE(terrain_modes));
-            
-            ImGui::Text("Terrain Height Scale");
-            ImGui::SliderFloat("##SettingsHills", &state_.terrain_height_scale, 0.0f, 4.0f, "%.1fx");
-        }
-        
-        if (ImGui::CollapsingHeader("Controls", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::TextDisabled("Changes made here persist across sessions.");
-        }
-        
         ImGui::Separator();
+        ImGui::TextDisabled("Settings persist across sessions.");
         if (ImGui::Button("Close", {-1, 0})) {
             state_.show_settings_window = false;
         }

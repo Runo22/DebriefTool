@@ -113,10 +113,15 @@ void UdpReceiver::recv_loop() {
         ParsedFrame& frame = *result;
 
         // Sequence gap detection per source (recv thread only — no lock).
+        // The 32-bit sequence wraps cleanly via unsigned arithmetic, so a simple
+        // delta works without false positives at wrap. A sender restart (sequence
+        // jumping back to a low value) is treated as a resync, not a gap, so the
+        // counter doesn't flood when a source is restarted.
         auto [it, inserted] = last_seq_.emplace(frame.source_id, frame.sequence);
         if (!inserted) {
-            uint32_t expected = it->second + 1;
-            if (frame.sequence != expected)
+            const uint32_t delta = frame.sequence - it->second; // wraps mod 2^32
+            const bool restart   = frame.sequence < it->second && delta > 0x80000000u;
+            if (delta != 1 && !restart)
                 ++stats_.sequence_gaps;
             it->second = frame.sequence;
         }

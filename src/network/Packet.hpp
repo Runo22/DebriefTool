@@ -7,16 +7,18 @@
 //  DEBRIEF UDP Wire Protocol  —  send packets to UDP port 5555
 //
 //  Packet layout:
-//    [ BatchHeader   8 bytes ]
-//    [ EntityUpdate 56 bytes ] × count   (1 – 26 per packet)
+//    [ BatchHeader   10 bytes ]
+//    [ EntityUpdate 103 bytes ] × count   (1 – 14 per packet)
 //
 //  Example (Python, 2 entities):
 //    import socket, struct, time
-//    hdr = struct.pack('<4sBBH', b'DBF1', 2, 0, seq)
-//    ent = struct.pack('<IHB5sdddfffffQ',
+//    hdr = struct.pack('<4sBBI', b'DBF1', 2, 0, seq)            # 10 bytes
+//    ent = struct.pack('<IHB32sdddddddQ',                       # 103 bytes
 //              entity_id, entity_type, health, callsign_bytes,
 //              lat, lon, alt, phi, theta, psi, speed, time.time_ns())
 //    sock.sendto(hdr + ent + ent2, ('127.0.0.1', 5555))
+//
+//  See docs/PROTOCOL.md for the full field reference, units and examples.
 //
 //  Entity types: 0=unknown, 1=jet, 2=missile, 3=aaa, 4=ground, 5=helo, 6=ship
 //
@@ -28,35 +30,40 @@
 
 namespace debrief::net {
 
+// Maximum callsign length (including the null terminator) shared by the wire
+// format, the in-memory state and the recording format.
+inline constexpr int kCallsignLen = 32;
+
 // ── Wire-format structs (no padding, little-endian) ───────────────────────────
 #pragma pack(push, 1)
 
 struct BatchHeader {
     uint8_t  magic[4];   // {'D','B','F','1'}
-    uint8_t  count;      // number of EntityUpdate records that follow (1–26)
+    uint8_t  count;      // number of EntityUpdate records that follow (1–14)
     uint8_t  source_id;  // 0 if you only have one data source
-    uint16_t sequence;   // increment each packet; used for drop detection
+    uint32_t sequence;   // increment each packet; used for drop detection.
+                         // 32-bit: ~2.2 years of headroom at 60 Hz before wrap.
 };
-// sizeof = 8
+// sizeof = 10
 
 struct EntityUpdate {
-    uint32_t id;            // unique, stable ID for this unit (never reuse)
-    uint16_t type;          // EntityTypeId below
-    uint8_t  health;        // 0 = destroyed, 255 = full (use 255 if N/A)
-    char     callsign[5];   // null-padded, e.g. "F16\0\0"
+    uint32_t id;                    // unique, stable ID for this unit (never reuse)
+    uint16_t type;                  // EntityTypeId below
+    uint8_t  health;                // 0 = destroyed, 255 = full (use 255 if N/A)
+    char     callsign[kCallsignLen];// null-padded UTF-8, e.g. "VIPER01\0..."
 
-    double   lat;           // latitude  (decimal degrees, e.g.  36.8500)
-    double   lon;           // longitude (decimal degrees, e.g.  35.1200)
-    float    alt;           // altitude  (metres above sea level)
+    double   lat;                   // latitude  (decimal degrees, e.g.  36.8500)
+    double   lon;                   // longitude (decimal degrees, e.g.  35.1200)
+    double   alt;                   // altitude  (metres above sea level)
 
-    float    phi;           // roll    (degrees, –180 to +180)
-    float    theta;         // pitch   (degrees,  –90 to  +90)
-    float    psi;           // heading (degrees, 0 = North, 90 = East, clockwise)
+    double   phi;                   // roll    (degrees, –180 to +180)
+    double   theta;                 // pitch   (degrees,  –90 to  +90)
+    double   psi;                   // heading (degrees, 0 = North, 90 = East, clockwise)
 
-    float    speed;         // airspeed m/s   (0 = unknown)
-    uint64_t time_ns;       // UNIX nanoseconds; 0 = server assigns current time
+    double   speed;                 // airspeed m/s   (0 = unknown)
+    uint64_t time_ns;               // UNIX nanoseconds; 0 = server assigns current time
 };
-// sizeof = (4+2+1+5) + (8+8+4) + (4+4+4) + 4 + 8 = 56 bytes
+// sizeof = (4+2+1+32) + (8+8+8) + (8+8+8) + 8 + 8 = 103 bytes
 
 enum EntityTypeId : uint16_t {
     TYPE_UNKNOWN = 0,
@@ -69,9 +76,12 @@ enum EntityTypeId : uint16_t {
 };
 
 inline constexpr uint8_t kMagic[4]    = {'D','B','F','1'};
-inline constexpr uint8_t kMaxPerPkt   = 26;   // fits standard Ethernet MTU
+inline constexpr uint8_t kMaxPerPkt   = 14;   // 10 + 14*103 = 1452 B, fits 1500 MTU
 
 #pragma pack(pop)
+
+static_assert(sizeof(BatchHeader)  == 10, "BatchHeader must be 10 bytes");
+static_assert(sizeof(EntityUpdate) == 103, "EntityUpdate must be 103 bytes");
 
 // ── In-memory decoded state (used throughout the engine) ──────────────────────
 // Filled by PacketParser; lat/lon/euler stored verbatim from the wire.
@@ -82,17 +92,17 @@ struct EntityState {
     uint16_t entity_type  = 0;   // EntityTypeId
     uint64_t timestamp_ns = 0;
     uint8_t  health       = 255;
-    char     callsign[8]  = {};
+    char     callsign[kCallsignLen] = {};
 
     // As received from wire
     double   lat_deg  = 0.0;
     double   lon_deg  = 0.0;
-    float    alt_m    = 0.0f;
-    float    phi_deg  = 0.0f;   // roll
-    float    theta_deg= 0.0f;   // pitch
-    float    psi_deg  = 0.0f;   // heading
+    double   alt_m    = 0.0;
+    double   phi_deg  = 0.0;    // roll
+    double   theta_deg= 0.0;    // pitch
+    double   psi_deg  = 0.0;    // heading
 
-    float    speed_mps= 0.0f;
+    double   speed_mps= 0.0;
 
     // Derived by Application (ENU metres from scene origin, quaternion)
     float    position[3]     = {};
@@ -104,7 +114,7 @@ struct EntityState {
 
 struct ParsedFrame {
     uint8_t  source_id = 0;
-    uint16_t sequence  = 0;
+    uint32_t sequence  = 0;
     std::vector<EntityState> entities;
 };
 

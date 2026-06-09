@@ -49,13 +49,17 @@ bash scripts/bootstrap.sh
 
 ## UDP Packet Format
 
-Send packets to **UDP port 5555** (configurable with `--port`).
+Send packets to **UDP port 5555** (configurable with `--port`, or in-app under
+**Settings → Network**).
+
+> **Full reference:** see **[`docs/PROTOCOL.md`](docs/PROTOCOL.md)** for every field,
+> its units, valid ranges, and ready-to-copy Python/C senders.
 
 ### Wire layout
 
 ```
-[ BatchHeader   8 bytes ]
-[ EntityUpdate 56 bytes ] × count   (max 26 per packet, fits standard MTU)
+[ BatchHeader   10 bytes ]
+[ EntityUpdate 103 bytes ] × count   (max 14 per packet, fits standard MTU)
 ```
 
 ### Structs (C, little-endian, no padding)
@@ -64,32 +68,35 @@ Send packets to **UDP port 5555** (configurable with `--port`).
 #pragma pack(push, 1)
 
 struct BatchHeader {
-    uint8_t  magic[4];   // must be {'D','B','F','1'}
-    uint8_t  count;      // number of EntityUpdate records following (1–26)
-    uint8_t  source_id;  // 0 if you only have one data source
-    uint16_t sequence;   // increment each packet (for drop detection)
+    uint8_t  magic[4];     // must be {'D','B','F','1'}
+    uint8_t  count;        // number of EntityUpdate records following (1–14)
+    uint8_t  source_id;    // 0 if you only have one data source
+    uint32_t sequence;     // increment each packet (drop detection; wraps cleanly)
 };
 
 struct EntityUpdate {
-    uint32_t id;          // stable unique ID for this unit — never change it
-    uint16_t type;        // see entity types below
-    uint8_t  health;      // 255 = full, 0 = destroyed
-    char     callsign[5]; // null-padded, e.g. "F16\0\0"
+    uint32_t id;           // stable unique ID for this unit — never change it
+    uint16_t type;         // see entity types below
+    uint8_t  health;       // 255 = full, 0 = destroyed
+    char     callsign[32]; // null-padded UTF-8, up to 31 chars, e.g. "VIPER01\0..."
 
-    double   lat;         // latitude  (decimal degrees, e.g.  36.8500)
-    double   lon;         // longitude (decimal degrees, e.g.  35.1200)
-    float    alt;         // altitude  (metres above sea level)
+    double   lat;          // latitude  (decimal degrees, e.g.  36.8500)
+    double   lon;          // longitude (decimal degrees, e.g.  35.1200)
+    double   alt;          // altitude  (metres above sea level)
 
-    float    phi;         // roll    (degrees, –180 to +180)
-    float    theta;       // pitch   (degrees, –90 to +90, positive = nose up)
-    float    psi;         // heading (degrees, 0 = North, 90 = East, clockwise)
+    double   phi;          // roll    (degrees, –180 to +180)
+    double   theta;        // pitch   (degrees, –90 to +90, positive = nose up)
+    double   psi;          // heading (degrees, 0 = North, 90 = East, clockwise)
 
-    float    speed;       // airspeed (m/s, 0 = unknown)
-    uint64_t time_ns;     // UNIX nanoseconds; 0 = server assigns current time
+    double   speed;        // airspeed (m/s, 0 = unknown)
+    uint64_t time_ns;      // UNIX nanoseconds; 0 = server assigns current time
 };
 
 #pragma pack(pop)
 ```
+
+All scalar fields are now **doubles** (previously some were 32-bit floats), and the
+**sequence counter is 32-bit** so long sessions no longer wrap after ~18 minutes.
 
 ### Entity types
 
@@ -113,11 +120,11 @@ seq  = 0
 
 def send(entities):
     global seq
-    hdr  = struct.pack('<4sBBH', b'DBF1', len(entities), 0, seq)
+    hdr  = struct.pack('<4sBBI', b'DBF1', len(entities), 0, seq & 0xFFFFFFFF)
     body = b''.join(
-        struct.pack('<IHB5sdddfffffQ',
+        struct.pack('<IHB32sdddddddQ',
                     e['id'], e['type'], e['health'],
-                    e['callsign'].encode().ljust(5, b'\x00'),
+                    e['callsign'].encode()[:31].ljust(32, b'\x00'),
                     e['lat'], e['lon'], e['alt'],
                     e['phi'], e['theta'], e['psi'],
                     e['speed'], time.time_ns())
@@ -127,7 +134,7 @@ def send(entities):
     seq += 1
 
 send([{
-    'id': 1, 'type': 1, 'health': 255, 'callsign': 'F16',
+    'id': 1, 'type': 1, 'health': 255, 'callsign': 'VIPER01',
     'lat': 36.85, 'lon': 35.12, 'alt': 3000.0,
     'phi': 0.0, 'theta': 5.0, 'psi': 270.0,   # heading West, 5° nose up
     'speed': 220.0,

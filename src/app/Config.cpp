@@ -31,6 +31,8 @@ void ConfigManager::load_config(UIState& state, const std::string& path) {
         if (config["invert_look"]) state.invert_look = config["invert_look"].as<bool>();
         if (config["mouse_sensitivity"]) state.mouse_sensitivity = config["mouse_sensitivity"].as<float>();
 
+        if (config["timeline_height"]) state.timeline_height = config["timeline_height"].as<float>();
+
     } catch (const YAML::Exception& e) {
         std::cerr << "Config load failed: " << e.what() << "\n";
     }
@@ -60,6 +62,8 @@ void ConfigManager::save_config(const UIState& state, const std::string& path) {
 
         config["invert_look"] = state.invert_look;
         config["mouse_sensitivity"] = state.mouse_sensitivity;
+
+        config["timeline_height"] = state.timeline_height;
 
         std::ofstream fout(path);
         fout << config;
