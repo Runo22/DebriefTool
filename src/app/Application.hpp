@@ -111,6 +111,9 @@ private:
     std::vector<net::EntityState> live_states_;
 
     bool running_ = true;
+    // Set by the UI "Clear" callback; the actual wipe runs at the top of the
+    // next tick() (shallow stack, outside ECS iteration / ImGui rendering).
+    bool clear_requested_ = false;
 };
 
 } // namespace debrief

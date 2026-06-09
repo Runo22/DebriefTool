@@ -1,6 +1,7 @@
 #include "app/Application.hpp"
 #include <cstdlib>
 #include <cstdio>
+#include <memory>
 
 int main(int argc, char** argv) {
     debrief::AppConfig cfg;
@@ -34,7 +35,10 @@ int main(int argc, char** argv) {
     else
         printf("[debrief] Listening UDP on %s:%u\n", cfg.bind_addr.c_str(), cfg.udp_port);
 
-    debrief::Application app{cfg};
-    app.run();
+    // Heap-allocate: Application embeds large fixed buffers (the TelemetryStore
+    // ring is ~0.5 MB, plus the inbound queue). Keeping it off the stack leaves
+    // the full stack available for the deep render/UI call path.
+    auto app = std::make_unique<debrief::Application>(cfg);
+    app->run();
     return 0;
 }

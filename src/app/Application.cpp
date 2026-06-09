@@ -219,7 +219,7 @@ void Application::init_ui_callbacks() {
         if (assets_.load(path, path, 1.0f))
             assets_.map_type(type_id, path);
     };
-    cbs.on_clear_entities = [this] { clear_all_entities(); };
+    cbs.on_clear_entities = [this] { clear_requested_ = true; };
     cbs.on_apply_network  = [this](std::string addr, uint16_t port) {
         apply_network_settings(addr, port);
     };
@@ -275,6 +275,13 @@ void Application::run() {
 }
 
 void Application::tick(float dt) {
+    // Run any deferred full clear here, before ECS iteration / rendering, so we
+    // never destruct entities from inside a query or the ImGui draw call stack.
+    if (clear_requested_) {
+        clear_requested_ = false;
+        clear_all_entities();
+    }
+
     handle_input(dt);
     if (cfg_.demo_mode) process_demo(dt);
     else                process_inbound_queue();
