@@ -108,27 +108,32 @@ private:
                       const persist::Recorder& recorder);
 
     void draw_timeline(PlaybackController& pb,
-                       const TelemetryStore& store);
+                       const TelemetryStore& store,
+                       const flecs::world& world);
 
-    void draw_entity_list(const flecs::world& world);
+    void draw_entity_list(const flecs::world& world, float bottom_offset);
 
     void draw_inspector(const flecs::world& world);
 
-    void draw_network_panel(const net::ReceiverStats& stats);
+    void draw_network_panel(const net::ReceiverStats& stats, float bottom_offset);
 
-    void draw_minimap(const flecs::world& world);
+    void draw_minimap(const flecs::world& world, float bottom_offset);
     void draw_settings_window();
 
     UIState    state_{};
     UICallbacks cbs_{};
 
-    // ImPlot altitude/speed telemetry data for the selected entity.
-    // Linear buffer reset whenever the selected entity changes.
-    static constexpr int kPlotWindow = 512;
+    // ImPlot altitude/speed telemetry for the selected entity.
+    // Ring buffer sampled on playback time (not per-frame), so the chart keeps
+    // scrolling forever instead of freezing once 512 frames have elapsed.
+    // X values are seconds since session start (matches the T+ readout).
+    static constexpr int   kPlotWindow     = 512;
+    static constexpr float kPlotSampleSec  = 0.1f;   // ~51 s of visible history
     float plot_time_[kPlotWindow]{};
-    float plot_alt_[kPlotWindow]{};
-    float plot_speed_[kPlotWindow]{};
-    int   plot_count_= 0;
+    float plot_alt_[kPlotWindow]{};     // feet
+    float plot_speed_[kPlotWindow]{};   // knots
+    int   plot_count_ = 0;
+    int   plot_head_  = 0;              // next write slot (ring)
     flecs::entity last_plot_entity_{};
 };
 

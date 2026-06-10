@@ -120,7 +120,14 @@ public:
     // Reset the store, clearing all snapshots, indexes, and histories.
     void clear() {
         std::unique_lock lock(mu_);
-        ring_ = {};
+        // Clear in place. Do NOT write `ring_ = {}` — that materialises a
+        // value-initialised std::array temporary (~kMaxSnapshots * sizeof(Snapshot),
+        // hundreds of KB) on the stack, which overflows it when clear() is called
+        // from a deep call stack (e.g. the UI "Clear" button during rendering).
+        for (auto& snap : ring_) {
+            snap.timestamp_ns = 0;
+            snap.entities.clear();
+        }
         write_idx_ = 0;
         count_ = 0;
         last_snapshot_ns_ = 0;

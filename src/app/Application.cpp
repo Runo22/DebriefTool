@@ -79,6 +79,11 @@ Application::~Application() {
     if (!cfg_.demo_mode) udp_receiver_.stop();
     recorder_.stop();
     ConfigManager::save_config(ui_.state(), "debrief_config.yaml");
+    // Free GL resources (models/meshes) while the GL context is still alive.
+    // The AssetManager member destructor runs after this body — i.e. after
+    // CloseWindow() has destroyed the context — so unloading there would make GL
+    // calls on a dead context and crash. unload_all() is idempotent.
+    assets_.unload_all();
     ImPlot::DestroyContext();
     rlImGuiShutdown();
     CloseWindow();
@@ -219,7 +224,7 @@ void Application::init_ui_callbacks() {
         if (assets_.load(path, path, 1.0f))
             assets_.map_type(type_id, path);
     };
-    cbs.on_clear_entities = [this] { clear_all_entities(); };
+    cbs.on_clear_entities = [this] { clear_requested_ = true; };
     cbs.on_apply_network  = [this](std::string addr, uint16_t port) {
         apply_network_settings(addr, port);
     };
@@ -232,10 +237,16 @@ void Application::init_ui_callbacks() {
 }
 
 void Application::clear_all_entities() {
+    // Destruct every spawned entity from our own handle map — NOT from inside a
+    // flecs query each(): flecs locks the matched table during iteration, and
+    // deleting from a locked table aborts in flecs_table_delete. Wrap the deletes
+    // in defer so they're queued and flushed at a safe (unlocked) point.
+    world_.defer_begin();
     for (auto& [key, e] : entity_map_)
         if (e.is_valid() && world_.is_alive(e)) e.destruct();
-    entity_map_.clear();
+    world_.defer_end();
 
+    entity_map_.clear();
     store_.clear();
     live_states_.clear();
     ui_.state().selected_entity = {};
@@ -275,6 +286,13 @@ void Application::run() {
 }
 
 void Application::tick(float dt) {
+    // Run any deferred full clear here, before ECS iteration / rendering, so we
+    // never destruct entities from inside a query or the ImGui draw call stack.
+    if (clear_requested_) {
+        clear_requested_ = false;
+        clear_all_entities();
+    }
+
     handle_input(dt);
     if (cfg_.demo_mode) process_demo(dt);
     else                process_inbound_queue();
@@ -786,10 +804,11 @@ void Application::render_3d() {
     }
 
     if (cfg_.demo_mode) {
-        int bw = 340, bh = 26, bx = GetScreenWidth()/2 - 170;
-        DrawRectangle(bx, 4, bw, bh, {0,0,0,160});
-        DrawRectangleLines(bx, 4, bw, bh, {255,180,0,100});
-        DrawText("DEMO MODE  \xe2\x80\x94  Live UDP Disabled", bx+10, 9, 15, {255,200,0,230});
+        // Below the toolbar row so it never overlaps the transport buttons.
+        int bw = 340, bh = 26, bx = GetScreenWidth()/2 - 170, by = 44;
+        DrawRectangle(bx, by, bw, bh, {0,0,0,160});
+        DrawRectangleLines(bx, by, bw, bh, {255,180,0,100});
+        DrawText("DEMO MODE  \xe2\x80\x94  Live UDP Disabled", bx+10, by+5, 15, {255,200,0,230});
     }
 }
 
@@ -826,17 +845,20 @@ void Application::handle_input(float /*dt*/) {
         Ray ray = GetMouseRay(GetMousePosition(), camera_);
         float best_dist = 1e10f;
         flecs::entity best_ent{};
+        const float exag = ui_.state().altitude_exaggerate;
 
         world_.query<const ecs::EntityMeta, const ecs::Position>()
             .each([&](flecs::entity e, const ecs::EntityMeta& meta, const ecs::Position& pos) {
                 if (!meta.active) return;
-                // Hit-test against a screen-space sphere whose radius scales with camera distance
+                // Hit-test against the RENDERED position (altitude exaggeration
+                // applied) — otherwise clicks miss whenever exaggeration > 1.
+                Vector3 rp = { pos.v.x, pos.v.y * exag, pos.v.z };
                 float pick_r = ui_.state().entity_3d_scale * 30.0f;
-                Vector3 to_center = Vector3Subtract(pos.v, ray.position);
+                Vector3 to_center = Vector3Subtract(rp, ray.position);
                 float t = Vector3DotProduct(to_center, ray.direction);
                 if (t < 0) return;
                 Vector3 closest = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
-                float dist = Vector3Length(Vector3Subtract(closest, pos.v));
+                float dist = Vector3Length(Vector3Subtract(closest, rp));
                 if (dist < pick_r && t < best_dist) {
                     best_dist = t;
                     best_ent  = e;
