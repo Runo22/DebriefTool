@@ -21,7 +21,7 @@ struct AppConfig {
     std::string bind_addr     = "0.0.0.0";
     int         window_width  = 1600;
     int         window_height = 900;
-    std::string window_title  = "Debrief  |  Tactical Analysis";
+    std::string window_title  = "AfterAction  |  Tactical Debrief";
     int         target_fps    = 60;
     bool        demo_mode     = false;
 };

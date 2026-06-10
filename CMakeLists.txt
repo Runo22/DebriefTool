@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.25)
-project(debrief VERSION 0.1.0 LANGUAGES CXX C)
+project(afteraction VERSION 0.1.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,7 +20,7 @@ endif()
 # ── Global flags — applied to ALL targets including submodules ─────────────────
 #
 #  IMPORTANT: keep this section MINIMAL and submodule-safe.
-#  Strict flags (/WX, -Werror, /W4, -Wall) go on the `debrief` target below,
+#  Strict flags (/WX, -Werror, /W4, -Wall) go on the `afteraction` target below,
 #  NOT here — otherwise Assimp/Raylib/Flecs warnings become build errors.
 #
 if(MSVC)
@@ -118,15 +118,15 @@ endif()
 # ── Main executable ────────────────────────────────────────────────────────────
 file(GLOB_RECURSE DEBRIEF_SRC "src/*.cpp" "src/*.hpp")
 
-add_executable(debrief ${DEBRIEF_SRC})
+add_executable(afteraction ${DEBRIEF_SRC})
 
-target_include_directories(debrief PRIVATE
+target_include_directories(afteraction PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${IMGUI_DIR}
     ${IMPLOT_DIR}
 )
 
-target_link_libraries(debrief PRIVATE
+target_link_libraries(afteraction PRIVATE
     raylib
     flecs_static
     assimp
@@ -137,7 +137,7 @@ target_link_libraries(debrief PRIVATE
 
 # ── Strict flags for OUR code only — NOT propagated to submodules ──────────────
 if(MSVC)
-    target_compile_options(debrief PRIVATE
+    target_compile_options(afteraction PRIVATE
         /W4           # high warning level
         /WX           # warnings-as-errors for our own code only
         /permissive-  # strict standards conformance
@@ -149,9 +149,9 @@ if(MSVC)
     # in our TUs. Those headers declare Rectangle() and DrawText() as Win32 API
     # functions that conflict with raylib's Rectangle struct and DrawText function.
     # Applied per-target so GLFW (a separate target) still gets those headers.
-    target_compile_definitions(debrief PRIVATE NOGDI NOUSER)
+    target_compile_definitions(afteraction PRIVATE NOGDI NOUSER)
 else()
-    target_compile_options(debrief PRIVATE
+    target_compile_options(afteraction PRIVATE
         -Wall
         -Wextra
         -Wno-unused-parameter
@@ -164,11 +164,11 @@ endif()
 
 # ── Platform link libs ─────────────────────────────────────────────────────────
 if(WIN32)
-    target_link_libraries(debrief PRIVATE ws2_32 winmm)
+    target_link_libraries(afteraction PRIVATE ws2_32 winmm)
 endif()
 
 if(APPLE)
-    target_link_libraries(debrief PRIVATE
+    target_link_libraries(afteraction PRIVATE
         "-framework Cocoa"
         "-framework IOKit"
         "-framework CoreAudio"
@@ -177,13 +177,13 @@ if(APPLE)
 endif()
 
 if(DEBRIEF_TRACY)
-    target_link_libraries(debrief PRIVATE TracyClient)
+    target_link_libraries(afteraction PRIVATE TracyClient)
 endif()
 
 # ── Post-build: copy assets ────────────────────────────────────────────────────
-add_custom_command(TARGET debrief POST_BUILD
+add_custom_command(TARGET afteraction POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:debrief>/assets
+        ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:afteraction>/assets
     COMMENT "Copying assets..."
 )
 

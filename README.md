@@ -1,6 +1,6 @@
-# Debrief
+# AfterAction
 
-Real-time 3D tactical telemetry visualization and post-action review tool.
+Real-time 3D tactical telemetry visualization and post-action review (AAR) tool.
 
 Receives spatial data over UDP, renders it in 3D, records everything, and provides full VCR-style playback — scrub, rewind, fast-forward through any engagement.
 
@@ -14,7 +14,7 @@ Receives spatial data over UDP, renders it in 3D, records everything, and provid
 git clone --recurse-submodules <this-repo>
 scripts\bootstrap.bat
 cmake --build build --config Release --parallel
-build\Release\debrief.exe --demo
+build\Release\afteraction.exe --demo
 ```
 
 The `--demo` flag runs a built-in scripted scenario (two jets, a missile, an AAA site, and a helicopter) so you can evaluate the tool without any external data source.
@@ -226,7 +226,7 @@ assets_.map_type(net::TYPE_JET, "jet");
 ## Command-line flags
 
 ```
-debrief.exe [options]
+afteraction.exe [options]
 
   --demo            Run built-in flight demo (no UDP required)
   --port  N         UDP listen port (default 5555)
