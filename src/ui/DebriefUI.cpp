@@ -8,7 +8,6 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <limits>
 
 namespace debrief {
 
@@ -394,18 +393,16 @@ void DebriefUI::draw_timeline(PlaybackController& pb,
             auto [s0, s1] = padded(slo, shi, 10.0f);    // ≥10 kt visible span
             ImPlot::SetupAxisLimits(ImAxis_Y1, a0, a1, ImPlotCond_Always);
             ImPlot::SetupAxisLimits(ImAxis_Y2, s0, s1, ImPlotCond_Always);
-        }
 
-        if (plot_count_ >= 2) {
             ImPlotSpec aspec;
             aspec.LineColor  = ImVec4{0.00f, 0.70f, 1.00f, 1.00f};
             aspec.FillColor  = ImVec4{0.00f, 0.70f, 1.00f, 0.15f};
             aspec.LineWeight = 2.0f;
             ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
-            // -INFINITY reference fills down to the plot floor regardless of the
-            // axis range (a 0 reference inverts the fill for negative altitudes).
-            ImPlot::PlotShaded("Alt ft", xs, alt, plot_count_,
-                               -std::numeric_limits<double>::infinity(), aspec);
+            // Shade down to the Y1 axis floor (the padded altitude minimum). Using
+            // a finite baseline avoids feeding non-finite vertices into ImPlot, and
+            // tracking the floor keeps the fill correct for negative altitudes.
+            ImPlot::PlotShaded("Alt ft", xs, alt, plot_count_, a0, aspec);
             ImPlot::PlotLine  ("Alt ft", xs, alt, plot_count_, aspec);
 
             ImPlotSpec sspec;
@@ -579,7 +576,8 @@ void DebriefUI::draw_inspector(const flecs::world& world)
     if (!state_.selected_entity.is_valid()) return;
     if (!world.is_alive(state_.selected_entity)) { state_.selected_entity = {}; return; }
 
-    // Sized to its content so the minimap/network stack below never overlaps it.
+    // Fixed compact size, chosen to fit the inspector's contents, so the
+    // minimap/network stack pinned below it never overlaps.
     ImGui::SetNextWindowPos({static_cast<float>(GetScreenWidth()) - 230.0f, 40.0f});
     ImGui::SetNextWindowSize({230.0f, 235.0f});
     ImGui::Begin("Inspector", nullptr,
