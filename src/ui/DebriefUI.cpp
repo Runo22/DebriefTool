@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 
 namespace debrief {
 
@@ -60,10 +61,15 @@ static void apply_premium_theme() {
     style.PopupRounding = 4.0f;
     style.GrabRounding = 4.0f;
     style.ScrollbarRounding = 4.0f;
+    style.TabRounding = 4.0f;
+    style.ChildRounding = 4.0f;
     style.WindowBorderSize = 1.0f;
     style.FrameBorderSize = 1.0f;
     style.PopupBorderSize = 1.0f;
-    
+    style.SeparatorTextBorderSize = 1.0f;
+    style.SeparatorTextAlign = ImVec2(0.0f, 0.5f);
+    style.SeparatorTextPadding = ImVec2(16.0f, 2.0f);
+
     style.WindowPadding = ImVec2(10.0f, 10.0f);
     style.FramePadding = ImVec2(6.0f, 4.0f);
     style.ItemSpacing = ImVec2(8.0f, 6.0f);
@@ -107,8 +113,16 @@ static void apply_premium_theme() {
     colors[ImGuiCol_ScrollbarGrabHovered]   = ImVec4(0.18f, 0.30f, 0.48f, 0.90f);
     colors[ImGuiCol_ScrollbarGrabActive]    = ImVec4(0.00f, 0.50f, 0.80f, 1.00f);
     
-    colors[ImGuiCol_CheckMark]              = ImVec4(0.00f, 0.85f, 1.00f, 1.00f); 
+    colors[ImGuiCol_CheckMark]              = ImVec4(0.00f, 0.85f, 1.00f, 1.00f);
     colors[ImGuiCol_Separator]              = ImVec4(0.18f, 0.28f, 0.40f, 0.75f);
+}
+
+// Cyan section header with a rule line — replaces the ad-hoc coloured
+// TextUnformatted headers so every panel uses one consistent style.
+static void section_header(const char* label) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.75f, 1.0f, 1.0f));
+    ImGui::SeparatorText(label);
+    ImGui::PopStyleColor();
 }
 
 // ── Main draw ─────────────────────────────────────────────────────────────────
@@ -119,12 +133,21 @@ void DebriefUI::draw(PlaybackController& pb,
                      const flecs::world& world)
 {
     apply_premium_theme();
+
+    // Height the bottom timeline panel occupies (0 when hidden) so the side
+    // panels can stack above it instead of being covered by it.
+    auto [ts, te] = store.time_range_ns();
+    const float bottom_off = (ts == 0 && te == 0)
+        ? 0.0f
+        : std::clamp(state_.timeline_height, 110.0f,
+                     static_cast<float>(GetScreenHeight()) * 0.6f);
+
     draw_toolbar(pb, recorder);
-    draw_timeline(pb, store);
-    draw_entity_list(world);
+    draw_timeline(pb, store, world);
+    draw_entity_list(world, bottom_off);
     draw_inspector(world);
-    draw_network_panel(net_stats);
-    if (state_.show_minimap) draw_minimap(world);
+    if (state_.show_stats)   draw_network_panel(net_stats, bottom_off);
+    if (state_.show_minimap) draw_minimap(world, bottom_off);
     draw_settings_window();
 }
 
@@ -184,7 +207,7 @@ void DebriefUI::draw_toolbar(PlaybackController& pb,
     ImGui::SameLine();
 
     float spd = pb.speed();
-    ImGui::SetNextItemWidth(90);
+    ImGui::SetNextItemWidth(118);
     if (ImGui::SliderFloat("##Speed", &spd, -8.0f, 8.0f, "Speed: %.1fx"))
         pb.set_speed(spd);
 
@@ -211,18 +234,38 @@ void DebriefUI::draw_toolbar(PlaybackController& pb,
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
 void DebriefUI::draw_timeline(PlaybackController& pb,
-                               const TelemetryStore& store)
+                               const TelemetryStore& store,
+                               const flecs::world& world)
 {
     auto [t_start, t_end] = store.time_range_ns();
     if (t_start == 0 && t_end == 0) return;
 
     const float h = GetScreenHeight();
+    const float w = static_cast<float>(GetScreenWidth());
     const float panel_h = std::clamp(state_.timeline_height, 110.0f, h * 0.6f);
     ImGui::SetNextWindowPos({0, h - panel_h});
-    ImGui::SetNextWindowSize({static_cast<float>(GetScreenWidth()), panel_h});
+    ImGui::SetNextWindowSize({w, panel_h});
     ImGui::Begin("##timeline", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                  ImGuiWindowFlags_NoScrollbar);
+
+    // ── Drag the top edge to resize the whole panel (incl. the chart) ─────────
+    {
+        ImVec2 wp = ImGui::GetWindowPos();
+        ImVec2 saved = ImGui::GetCursorScreenPos();
+        ImGui::SetCursorScreenPos({wp.x, wp.y});
+        ImGui::InvisibleButton("##tl_resize", {w, 8.0f});
+        bool grip = ImGui::IsItemHovered() || ImGui::IsItemActive();
+        if (grip) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        if (ImGui::IsItemActive())
+            state_.timeline_height = std::clamp(
+                state_.timeline_height - ImGui::GetIO().MouseDelta.y,
+                110.0f, h * 0.6f);
+        ImGui::GetWindowDrawList()->AddLine(
+            {wp.x, wp.y + 1.0f}, {wp.x + w, wp.y + 1.0f},
+            grip ? IM_COL32(0, 190, 255, 220) : IM_COL32(40, 70, 100, 130), 2.0f);
+        ImGui::SetCursorScreenPos(saved);
+    }
 
     // Large custom-styled scrubber slider
     float frac = pb.scrub_pos(t_start, t_end);
@@ -265,39 +308,127 @@ void DebriefUI::draw_timeline(PlaybackController& pb,
     format_duration(cur_off, buf, sizeof(buf));
     ImGui::Text("  T+%s", buf);
 
-    // ImPlot altitude area-shaded chart (selected entity).
-    // Fills the remaining height of the panel so resizing the panel (Settings →
-    // Display → Timeline Height) gives the chart a proportionally larger view.
+    // ── Sample the selected entity's altitude/speed on the PLAYBACK clock ─────
+    // Keyed to playback time (not wall/frame time) so the X axis matches the T+
+    // readout, pauses hold still, and scrubbing backwards restarts the trace.
+    {
+        flecs::entity sel = state_.selected_entity;
+        if (sel != last_plot_entity_) {
+            plot_count_ = 0; plot_head_ = 0;
+            last_plot_entity_ = sel;
+        }
+        if (sel.is_valid() && world.is_alive(sel) &&
+            sel.has<Position>() && sel.has<Velocity>())
+        {
+            const float t = static_cast<float>(
+                static_cast<double>(pb.current_time_ns() - t_start) * 1e-9);
+            const int newest = (plot_head_ + kPlotWindow - 1) % kPlotWindow;
+            const float newest_t = (plot_count_ > 0) ? plot_time_[newest] : 0.0f;
+
+            if (plot_count_ > 0 && t < newest_t - 1e-3f) {  // rewind/seek-back
+                plot_count_ = 0; plot_head_ = 0;
+            }
+            if (plot_count_ == 0 || t - newest_t >= kPlotSampleSec) {
+                const auto& p = sel.get<Position>();
+                const auto& v = sel.get<Velocity>();
+                plot_time_ [plot_head_] = t;
+                plot_alt_  [plot_head_] = p.v.y * 3.28084f;                 // ft
+                plot_speed_[plot_head_] = sqrtf(v.v.x*v.v.x + v.v.y*v.v.y +
+                                                v.v.z*v.v.z) * 1.94384f;    // kt
+                plot_head_ = (plot_head_ + 1) % kPlotWindow;
+                if (plot_count_ < kPlotWindow) ++plot_count_;
+            }
+        }
+    }
+
+    // ── Altitude/speed strip chart — fills the rest of the (resizable) panel ──
     ImGui::Spacing();
-    if (plot_count_ == 0)
-        ImGui::TextDisabled("Altitude (ft) — select an entity to plot its profile");
+    if (plot_count_ < 2) {
+        ImGui::TextDisabled(state_.selected_entity.is_valid()
+            ? "Collecting telemetry for selected track..."
+            : "Select a track (click in 3D or in the Units list) to plot altitude & speed");
+    }
+
+    // Linearise the ring into draw-order scratch buffers (oldest → newest).
+    float xs[kPlotWindow], alt[kPlotWindow], spd[kPlotWindow];
+    const int start = (plot_count_ < kPlotWindow) ? 0 : plot_head_;
+    for (int i = 0; i < plot_count_; ++i) {
+        const int idx = (start + i) % kPlotWindow;
+        xs[i] = plot_time_[idx]; alt[i] = plot_alt_[idx]; spd[i] = plot_speed_[idx];
+    }
+
+    ImPlot::PushStyleColor(ImPlotCol_FrameBg,    {0, 0, 0, 0});
+    ImPlot::PushStyleColor(ImPlotCol_PlotBg,     {0.02f, 0.04f, 0.08f, 0.55f});
+    ImPlot::PushStyleColor(ImPlotCol_PlotBorder, {0.18f, 0.28f, 0.40f, 0.60f});
+    ImPlot::PushStyleColor(ImPlotCol_LegendBg,   {0.04f, 0.06f, 0.10f, 0.65f});
     if (ImPlot::BeginPlot("##alt", {-1, -1},
                           ImPlotFlags_NoTitle | ImPlotFlags_NoMenus |
                           ImPlotFlags_NoBoxSelect | ImPlotFlags_NoMouseText))
     {
-        // AutoFit both axes so the trace always fills the plot as data scrolls in.
-        ImPlot::SetupAxes("Time (s)", "Alt (ft)",
-                          ImPlotAxisFlags_AutoFit,
-                          ImPlotAxisFlags_AutoFit);
-        if (plot_count_ > 0) {
-            ImPlotSpec spec;
-            spec.LineColor = ImVec4{0.00f, 0.70f, 1.00f, 1.00f};
-            spec.FillColor = ImVec4{0.00f, 0.70f, 1.00f, 0.15f};
-            spec.LineWeight = 2.0f;
-            ImPlot::PlotShaded("Altitude", plot_time_, plot_alt_, plot_count_, 0.0, spec);
-            ImPlot::PlotLine("Altitude", plot_time_, plot_alt_, plot_count_, spec);
+        ImPlot::SetupAxis(ImAxis_X1, "T+ (s)");
+        ImPlot::SetupAxis(ImAxis_Y1, "Alt (ft)");
+        ImPlot::SetupAxis(ImAxis_Y2, "Spd (kt)",
+                          ImPlotAxisFlags_Opposite | ImPlotAxisFlags_NoGridLines);
+        ImPlot::SetupLegend(ImPlotLocation_NorthWest);
+
+        // Explicit, padded axis limits recomputed every frame. AutoFit misbehaves
+        // on flat traces (degenerate min==max range → repeated tick labels and
+        // line artefacts); padding a guarded span keeps the scale honest as data
+        // streams in, and pinning X to the sample span keeps the trace filling
+        // the full plot width.
+        if (plot_count_ >= 2) {
+            double x1 = xs[plot_count_ - 1];
+            double x0 = std::min(static_cast<double>(xs[0]), x1 - 5.0);
+            ImPlot::SetupAxisLimits(ImAxis_X1, x0, x1, ImPlotCond_Always);
+
+            float alo = 1e30f, ahi = -1e30f, slo = 1e30f, shi = -1e30f;
+            for (int i = 0; i < plot_count_; ++i) {
+                alo = std::min(alo, alt[i]); ahi = std::max(ahi, alt[i]);
+                slo = std::min(slo, spd[i]); shi = std::max(shi, spd[i]);
+            }
+            auto padded = [](float lo, float hi, float min_span) {
+                float span = std::max(hi - lo, min_span);
+                return std::pair<double, double>{ lo - span * 0.10, hi + span * 0.10 };
+            };
+            auto [a0, a1] = padded(alo, ahi, 100.0f);   // ≥100 ft visible span
+            auto [s0, s1] = padded(slo, shi, 10.0f);    // ≥10 kt visible span
+            ImPlot::SetupAxisLimits(ImAxis_Y1, a0, a1, ImPlotCond_Always);
+            ImPlot::SetupAxisLimits(ImAxis_Y2, s0, s1, ImPlotCond_Always);
+        }
+
+        if (plot_count_ >= 2) {
+            ImPlotSpec aspec;
+            aspec.LineColor  = ImVec4{0.00f, 0.70f, 1.00f, 1.00f};
+            aspec.FillColor  = ImVec4{0.00f, 0.70f, 1.00f, 0.15f};
+            aspec.LineWeight = 2.0f;
+            ImPlot::SetAxes(ImAxis_X1, ImAxis_Y1);
+            // -INFINITY reference fills down to the plot floor regardless of the
+            // axis range (a 0 reference inverts the fill for negative altitudes).
+            ImPlot::PlotShaded("Alt ft", xs, alt, plot_count_,
+                               -std::numeric_limits<double>::infinity(), aspec);
+            ImPlot::PlotLine  ("Alt ft", xs, alt, plot_count_, aspec);
+
+            ImPlotSpec sspec;
+            sspec.LineColor  = ImVec4{1.00f, 0.72f, 0.20f, 0.90f};
+            sspec.LineWeight = 1.5f;
+            ImPlot::SetAxes(ImAxis_X1, ImAxis_Y2);
+            ImPlot::PlotLine("Spd kt", xs, spd, plot_count_, sspec);
         }
         ImPlot::EndPlot();
     }
+    ImPlot::PopStyleColor(4);
 
     ImGui::End();
 }
 
 // ── Entity list ───────────────────────────────────────────────────────────────
-void DebriefUI::draw_entity_list(const flecs::world& world)
+void DebriefUI::draw_entity_list(const flecs::world& world, float bottom_offset)
 {
+    // Stop above the (resizable) timeline panel instead of running under it.
+    const float list_h = std::max(120.0f,
+        static_cast<float>(GetScreenHeight()) - 40.0f - bottom_offset - 8.0f);
     ImGui::SetNextWindowPos({0, 40.0f});
-    ImGui::SetNextWindowSize({220.0f, static_cast<float>(GetScreenHeight()) - 175.0f});
+    ImGui::SetNextWindowSize({220.0f, list_h});
     ImGui::Begin("##SidePanel", nullptr,
                  ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
@@ -374,9 +505,7 @@ void DebriefUI::draw_entity_list(const flecs::world& world)
         // ── Visuals Tab ───────────────────────────────────────────────────────
         if (ImGui::BeginTabItem(" Camera ")) {
             // Camera mode
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.75f, 1.0f, 1.0f));
-            ImGui::TextUnformatted("CAMERA MODE");
-            ImGui::PopStyleColor();
+            section_header("CAMERA MODE");
 
             const char* cam_modes[] = { "  Free Orbit", "  Focus Target", "  Chase Cam" };
             ImGui::SetNextItemWidth(-1);
@@ -387,9 +516,7 @@ void DebriefUI::draw_entity_list(const flecs::world& world)
             }
 
             ImGui::Spacing();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.75f, 1.0f, 1.0f));
-            ImGui::TextUnformatted("CONTROLS");
-            ImGui::PopStyleColor();
+            section_header("CONTROLS");
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.65f, 0.8f, 0.9f));
             ImGui::TextUnformatted("LMB        Click to select");
             ImGui::TextUnformatted("RMB+drag   Rotate / Chase adj");
@@ -402,17 +529,12 @@ void DebriefUI::draw_entity_list(const flecs::world& world)
             ImGui::PopStyleColor();
 
             ImGui::Spacing();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.75f, 1.0f, 1.0f));
-            ImGui::TextUnformatted("MOUSE");
-            ImGui::PopStyleColor();
+            section_header("MOUSE");
             ImGui::Checkbox("Invert rotate (grab scene)", &state_.invert_look);
             ImGui::SetNextItemWidth(-1);
             ImGui::SliderFloat("##MouseSens", &state_.mouse_sensitivity, 0.2f, 3.0f, "Sensitivity: %.2fx");
 
-            ImGui::Separator();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.75f, 1.0f, 1.0f));
-            ImGui::TextUnformatted("SCENE SCALE");
-            ImGui::PopStyleColor();
+                        section_header("SCENE SCALE");
             ImGui::SetNextItemWidth(-1);
             ImGui::SliderFloat("##Scale", &state_.entity_3d_scale, 1.0f, 150.0f, "Entities: %.0fx");
             ImGui::SetNextItemWidth(-1);
@@ -429,20 +551,14 @@ void DebriefUI::draw_entity_list(const flecs::world& world)
                 state_.camera_distance = std::min(80000.0f, state_.camera_distance * 1.4f);
             }
 
-            ImGui::Separator();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.75f, 1.0f, 1.0f));
-            ImGui::TextUnformatted("TERRAIN (Quick)");
-            ImGui::PopStyleColor();
+                        section_header("TERRAIN (Quick)");
             const char* terrain_modes[] = { "None", "Wireframe", "Solid", "Both" };
             ImGui::SetNextItemWidth(-1);
             ImGui::Combo("##TerrainMode", &state_.terrain_mode, terrain_modes, IM_ARRAYSIZE(terrain_modes));
             ImGui::SetNextItemWidth(-1);
             ImGui::SliderFloat("##Hills", &state_.terrain_height_scale, 0.0f, 4.0f, "Hills: %.1fx");
 
-            ImGui::Separator();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.75f, 1.0f, 1.0f));
-            ImGui::TextUnformatted("OVERLAYS");
-            ImGui::PopStyleColor();
+                        section_header("OVERLAYS");
             ImGui::Checkbox("Callsign Labels",  &state_.show_labels);
             ImGui::Checkbox("Trail Lines",      &state_.show_trails);
             ImGui::Checkbox("Ribbon Mode",      &state_.ribbon_trails);
@@ -463,8 +579,9 @@ void DebriefUI::draw_inspector(const flecs::world& world)
     if (!state_.selected_entity.is_valid()) return;
     if (!world.is_alive(state_.selected_entity)) { state_.selected_entity = {}; return; }
 
+    // Sized to its content so the minimap/network stack below never overlaps it.
     ImGui::SetNextWindowPos({static_cast<float>(GetScreenWidth()) - 230.0f, 40.0f});
-    ImGui::SetNextWindowSize({230.0f, 350.0f});
+    ImGui::SetNextWindowSize({230.0f, 235.0f});
     ImGui::Begin("Inspector", nullptr,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
 
@@ -489,27 +606,16 @@ void DebriefUI::draw_inspector(const flecs::world& world)
         if (pos) ImGui::Text("Altitude: %.0f ft (%.0f m)", pos->v.y * 3.28084f, pos->v.y);
     }
 
-    // Update ImPlot sample buffer — reset on entity switch, cap at kPlotWindow
-    if (e != last_plot_entity_) {
-        plot_count_ = 0;
-        last_plot_entity_ = e;
-    }
-    if (pos && vel && plot_count_ < kPlotWindow) {
-        float spd = sqrtf(vel->v.x*vel->v.x + vel->v.y*vel->v.y + vel->v.z*vel->v.z);
-        plot_time_ [plot_count_] = static_cast<float>(ImGui::GetTime());
-        plot_alt_  [plot_count_] = pos->v.y * 3.28084f;   // feet, matches "Alt (ft)" axis
-        plot_speed_[plot_count_] = spd;
-        ++plot_count_;
-    }
+    // (Chart sampling happens in draw_timeline, keyed to the playback clock.)
 
     ImGui::End();
 }
 
 // ── Network panel ─────────────────────────────────────────────────────────────
-void DebriefUI::draw_network_panel(const net::ReceiverStats& stats)
+void DebriefUI::draw_network_panel(const net::ReceiverStats& stats, float bottom_offset)
 {
     ImGui::SetNextWindowPos({static_cast<float>(GetScreenWidth()) - 230.0f,
-                              static_cast<float>(GetScreenHeight()) - 230.0f});
+                              static_cast<float>(GetScreenHeight()) - bottom_offset - 168.0f});
     ImGui::SetNextWindowSize({230.0f, 160.0f});
     ImGui::Begin("Network", nullptr,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
@@ -524,11 +630,13 @@ void DebriefUI::draw_network_panel(const net::ReceiverStats& stats)
 }
 
 // ── Minimap ───────────────────────────────────────────────────────────────────
-void DebriefUI::draw_minimap(const flecs::world& world)
+void DebriefUI::draw_minimap(const flecs::world& world, float bottom_offset)
 {
     const float sz = 190.0f;
+    // Stack above the network panel, which itself sits above the timeline.
+    float net_h = state_.show_stats ? 168.0f : 0.0f;
     ImGui::SetNextWindowPos({static_cast<float>(GetScreenWidth()) - 230.0f,
-                              static_cast<float>(GetScreenHeight()) - 450.0f});
+                              static_cast<float>(GetScreenHeight()) - bottom_offset - net_h - 223.0f});
     ImGui::SetNextWindowSize({230.0f, 215.0f});
     ImGui::Begin("Minimap (top-down)", nullptr,
                  ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |

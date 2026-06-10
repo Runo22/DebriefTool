@@ -804,10 +804,11 @@ void Application::render_3d() {
     }
 
     if (cfg_.demo_mode) {
-        int bw = 340, bh = 26, bx = GetScreenWidth()/2 - 170;
-        DrawRectangle(bx, 4, bw, bh, {0,0,0,160});
-        DrawRectangleLines(bx, 4, bw, bh, {255,180,0,100});
-        DrawText("DEMO MODE  \xe2\x80\x94  Live UDP Disabled", bx+10, 9, 15, {255,200,0,230});
+        // Below the toolbar row so it never overlaps the transport buttons.
+        int bw = 340, bh = 26, bx = GetScreenWidth()/2 - 170, by = 44;
+        DrawRectangle(bx, by, bw, bh, {0,0,0,160});
+        DrawRectangleLines(bx, by, bw, bh, {255,180,0,100});
+        DrawText("DEMO MODE  \xe2\x80\x94  Live UDP Disabled", bx+10, by+5, 15, {255,200,0,230});
     }
 }
 
@@ -844,17 +845,20 @@ void Application::handle_input(float /*dt*/) {
         Ray ray = GetMouseRay(GetMousePosition(), camera_);
         float best_dist = 1e10f;
         flecs::entity best_ent{};
+        const float exag = ui_.state().altitude_exaggerate;
 
         world_.query<const ecs::EntityMeta, const ecs::Position>()
             .each([&](flecs::entity e, const ecs::EntityMeta& meta, const ecs::Position& pos) {
                 if (!meta.active) return;
-                // Hit-test against a screen-space sphere whose radius scales with camera distance
+                // Hit-test against the RENDERED position (altitude exaggeration
+                // applied) — otherwise clicks miss whenever exaggeration > 1.
+                Vector3 rp = { pos.v.x, pos.v.y * exag, pos.v.z };
                 float pick_r = ui_.state().entity_3d_scale * 30.0f;
-                Vector3 to_center = Vector3Subtract(pos.v, ray.position);
+                Vector3 to_center = Vector3Subtract(rp, ray.position);
                 float t = Vector3DotProduct(to_center, ray.direction);
                 if (t < 0) return;
                 Vector3 closest = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
-                float dist = Vector3Length(Vector3Subtract(closest, pos.v));
+                float dist = Vector3Length(Vector3Subtract(closest, rp));
                 if (dist < pick_r && t < best_dist) {
                     best_dist = t;
                     best_ent  = e;
