@@ -2,7 +2,7 @@
 #include "../network/Packet.hpp"
 #include <vector>
 
-namespace debrief::demo {
+namespace afteraction::demo {
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Demo Mode — scripted flight scenario, no UDP required.
@@ -36,4 +36,4 @@ private:
     float missile_z_       = 0.0f;
 };
 
-} // namespace debrief::demo
+} // namespace afteraction::demo

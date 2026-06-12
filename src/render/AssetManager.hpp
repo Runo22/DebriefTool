@@ -6,7 +6,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace debrief {
+namespace afteraction {
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Asset Manager
@@ -69,4 +69,4 @@ private:
     bool       ready_ = false;
 };
 
-} // namespace debrief
+} // namespace afteraction

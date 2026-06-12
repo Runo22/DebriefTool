@@ -1,4 +1,4 @@
-#include "DebriefUI.hpp"
+#include "AfterActionUI.hpp"
 #include "../ecs/Components.hpp"
 #include <imgui.h>
 #include <implot.h>
@@ -9,7 +9,7 @@
 #include <cstdio>
 #include <cstring>
 
-namespace debrief {
+namespace afteraction {
 
 using namespace ecs;
 
@@ -125,7 +125,7 @@ static void section_header(const char* label) {
 }
 
 // ── Main draw ─────────────────────────────────────────────────────────────────
-void DebriefUI::draw(PlaybackController& pb,
+void AfterActionUI::draw(PlaybackController& pb,
                      const TelemetryStore& store,
                      const net::ReceiverStats& net_stats,
                      const persist::Recorder& recorder,
@@ -151,7 +151,7 @@ void DebriefUI::draw(PlaybackController& pb,
 }
 
 // ── Toolbar ───────────────────────────────────────────────────────────────────
-void DebriefUI::draw_toolbar(PlaybackController& pb,
+void AfterActionUI::draw_toolbar(PlaybackController& pb,
                               const persist::Recorder& recorder)
 {
     ImGuiWindowFlags flags =
@@ -232,7 +232,7 @@ void DebriefUI::draw_toolbar(PlaybackController& pb,
 }
 
 // ── Timeline ──────────────────────────────────────────────────────────────────
-void DebriefUI::draw_timeline(PlaybackController& pb,
+void AfterActionUI::draw_timeline(PlaybackController& pb,
                                const TelemetryStore& store,
                                const flecs::world& world)
 {
@@ -419,7 +419,7 @@ void DebriefUI::draw_timeline(PlaybackController& pb,
 }
 
 // ── Entity list ───────────────────────────────────────────────────────────────
-void DebriefUI::draw_entity_list(const flecs::world& world, float bottom_offset)
+void AfterActionUI::draw_entity_list(const flecs::world& world, float bottom_offset)
 {
     // Stop above the (resizable) timeline panel instead of running under it.
     const float list_h = std::max(120.0f,
@@ -571,7 +571,7 @@ void DebriefUI::draw_entity_list(const flecs::world& world, float bottom_offset)
 
 
 // ── Inspector ─────────────────────────────────────────────────────────────────
-void DebriefUI::draw_inspector(const flecs::world& world)
+void AfterActionUI::draw_inspector(const flecs::world& world)
 {
     if (!state_.selected_entity.is_valid()) return;
     if (!world.is_alive(state_.selected_entity)) { state_.selected_entity = {}; return; }
@@ -610,7 +610,7 @@ void DebriefUI::draw_inspector(const flecs::world& world)
 }
 
 // ── Network panel ─────────────────────────────────────────────────────────────
-void DebriefUI::draw_network_panel(const net::ReceiverStats& stats, float bottom_offset)
+void AfterActionUI::draw_network_panel(const net::ReceiverStats& stats, float bottom_offset)
 {
     ImGui::SetNextWindowPos({static_cast<float>(GetScreenWidth()) - 230.0f,
                               static_cast<float>(GetScreenHeight()) - bottom_offset - 168.0f});
@@ -628,7 +628,7 @@ void DebriefUI::draw_network_panel(const net::ReceiverStats& stats, float bottom
 }
 
 // ── Minimap ───────────────────────────────────────────────────────────────────
-void DebriefUI::draw_minimap(const flecs::world& world, float bottom_offset)
+void AfterActionUI::draw_minimap(const flecs::world& world, float bottom_offset)
 {
     const float sz = 190.0f;
     // Stack above the network panel, which itself sits above the timeline.
@@ -717,7 +717,7 @@ void DebriefUI::draw_minimap(const flecs::world& world, float bottom_offset)
 }
 
 // ── Settings Window ───────────────────────────────────────────────────────────
-void DebriefUI::draw_settings_window() {
+void AfterActionUI::draw_settings_window() {
     if (!state_.show_settings_window) return;
 
     ImGui::SetNextWindowSize({340.0f, 440.0f}, ImGuiCond_FirstUseEver);
@@ -755,13 +755,13 @@ void DebriefUI::draw_settings_window() {
 
             // ── Session Files ─────────────────────────────────────────────────
             if (ImGui::BeginTabItem("Files")) {
-                ImGui::TextDisabled("Open a recorded .dbr session or import a CSV log.");
+                ImGui::TextDisabled("Open a recorded .aar session or import a CSV log.");
                 ImGui::SetNextItemWidth(-1.0f);
-                ImGui::InputTextWithHint("##load_path", "path to .dbr or .csv file",
+                ImGui::InputTextWithHint("##load_path", "path to .aar or .csv file",
                                          state_.load_path, sizeof(state_.load_path));
                 bool has_path = state_.load_path[0] != '\0';
                 ImGui::BeginDisabled(!has_path);
-                if (ImGui::Button(ICON_FA_FOLDER_OPEN " Open .dbr")) {
+                if (ImGui::Button(ICON_FA_FOLDER_OPEN " Open .aar")) {
                     if (cbs_.on_load_file) cbs_.on_load_file(state_.load_path);
                 }
                 ImGui::SameLine();
@@ -831,4 +831,4 @@ void DebriefUI::draw_settings_window() {
     ImGui::End();
 }
 
-} // namespace debrief
+} // namespace afteraction

@@ -3,7 +3,7 @@
 #include <raylib.h>
 #include <raymath.h>
 
-namespace debrief {
+namespace afteraction {
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Trail Renderer
@@ -87,4 +87,4 @@ private:
     }
 };
 
-} // namespace debrief
+} // namespace afteraction

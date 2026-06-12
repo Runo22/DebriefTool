@@ -4,7 +4,7 @@
 #include <memory>
 
 int main(int argc, char** argv) {
-    debrief::AppConfig cfg;
+    afteraction::AppConfig cfg;
 
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
@@ -17,7 +17,7 @@ int main(int argc, char** argv) {
             puts("AfterAction — tactical telemetry viewer & debrief");
             puts("Usage: afteraction [options]");
             puts("  --demo            Run built-in flight demo (no UDP needed)");
-            puts("  --port  N         UDP listen port (default 5555)");
+            puts("  --port  N         UDP listen port (default 22522)");
             puts("  --addr  IP        Bind address (default 0.0.0.0)");
             puts("  --width  N        Window width  (default 1600)");
             puts("  --height N        Window height (default 900)");
@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
     // Heap-allocate: Application embeds large fixed buffers (the TelemetryStore
     // ring is ~0.5 MB, plus the inbound queue). Keeping it off the stack leaves
     // the full stack available for the deep render/UI call path.
-    auto app = std::make_unique<debrief::Application>(cfg);
+    auto app = std::make_unique<afteraction::Application>(cfg);
     app->run();
     return 0;
 }

@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <chrono>
 
-namespace debrief {
+namespace afteraction {
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  PlaybackController  —  VCR state machine
@@ -59,4 +59,4 @@ private:
     uint64_t      current_ns_ = 0;
 };
 
-} // namespace debrief
+} // namespace afteraction

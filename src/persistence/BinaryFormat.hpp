@@ -4,7 +4,7 @@
 #include "../network/Packet.hpp"   // net::kCallsignLen
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Debrief Session File Format  —  ".dbr"
+//  AfterAction Session File Format  —  ".aar"
 //
 //  Layout:
 //
@@ -27,9 +27,9 @@
 //  - Magic + version enables forward compatibility.
 // ─────────────────────────────────────────────────────────────────────────────
 
-namespace debrief::persist {
+namespace afteraction::persist {
 
-inline constexpr uint64_t kFileMagic   = 0x5242454244424400ULL; // "DEBRIEF\0"
+inline constexpr uint64_t kFileMagic   = 0x5745495645524141ULL; // "AAREVIEW"
 inline constexpr uint32_t kFileVersion = 2;  // v2: callsign widened 8 -> 32 bytes
 inline constexpr uint32_t kIndexInterval = 100; // one index entry every N frames
 
@@ -91,4 +91,4 @@ static_assert(sizeof(FileFooter) == 16);
 
 #pragma pack(pop)
 
-} // namespace debrief::persist
+} // namespace afteraction::persist

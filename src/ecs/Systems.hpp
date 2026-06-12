@@ -2,7 +2,7 @@
 #include <flecs.h>
 #include <cstdint>
 
-namespace debrief::ecs {
+namespace afteraction::ecs {
 
 // Registers all simulation systems into the given world.
 // Call once during application init, before the first world.progress().
@@ -21,4 +21,4 @@ struct TrailCtx {
     float sample_distance_sq = 4.0f; // minimum squared distance before appending a trail point
 };
 
-} // namespace debrief::ecs
+} // namespace afteraction::ecs

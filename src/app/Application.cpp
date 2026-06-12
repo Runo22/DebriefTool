@@ -18,7 +18,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-namespace debrief {
+namespace afteraction {
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Coordinate helpers
@@ -78,7 +78,7 @@ Application::Application(AppConfig cfg)
 Application::~Application() {
     if (!cfg_.demo_mode) udp_receiver_.stop();
     recorder_.stop();
-    ConfigManager::save_config(ui_.state(), "debrief_config.yaml");
+    ConfigManager::save_config(ui_.state(), "afteraction_config.yaml");
     // Free GL resources (models/meshes) while the GL context is still alive.
     // The AssetManager member destructor runs after this body — i.e. after
     // CloseWindow() has destroyed the context — so unloading there would make GL
@@ -155,7 +155,7 @@ void Application::init_camera() {
     ui_.state().far_clip_plane  = 2000000.0f;
 
     // Load config
-    ConfigManager::load_config(ui_.state(), "debrief_config.yaml");
+    ConfigManager::load_config(ui_.state(), "afteraction_config.yaml");
 }
 
 void Application::init_ui_callbacks() {
@@ -164,7 +164,7 @@ void Application::init_ui_callbacks() {
         char fn[128];
         time_t t = time(nullptr);
         tm* lt   = localtime(&t);
-        strftime(fn, sizeof(fn), "session_%Y%m%d_%H%M%S.dbr", lt);
+        strftime(fn, sizeof(fn), "session_%Y%m%d_%H%M%S.aar", lt);
         recorder_.start(fn, fn);
     };
     cbs.on_record_stop = [this] { recorder_.stop(); };
@@ -172,7 +172,7 @@ void Application::init_ui_callbacks() {
         char fn[128];
         time_t t = time(nullptr);
         tm* lt   = localtime(&t);
-        strftime(fn, sizeof(fn), "dashcam_%Y%m%d_%H%M%S.dbr", lt);
+        strftime(fn, sizeof(fn), "dashcam_%Y%m%d_%H%M%S.aar", lt);
         persist::Recorder::export_slice(store_, secs, fn, "dashcam");
     };
     cbs.on_load_file = [this](std::string path) {
@@ -1227,4 +1227,4 @@ void Application::update_camera_state(float dt) {
     }
 }
 
-} // namespace debrief
+} // namespace afteraction

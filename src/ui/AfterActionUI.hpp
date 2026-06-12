@@ -8,10 +8,10 @@
 #include <optional>
 #include <string>
 
-namespace debrief {
+namespace afteraction {
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  DebriefUI  —  entire Dear ImGui + ImPlot overlay
+//  AfterActionUI  —  entire Dear ImGui + ImPlot overlay
 //
 //  Owns no heavy state — holds non-owning references to app subsystems.
 //  All draw calls must happen between rlImGuiBegin() / rlImGuiEnd().
@@ -37,7 +37,7 @@ struct UIState {
     flecs::entity selected_entity{};
 
     // Network panel
-    uint16_t listen_port = 5555;
+    uint16_t listen_port = 22522;
     char     bind_addr[64] = "0.0.0.0";
 
     // Dashcam
@@ -87,9 +87,9 @@ struct UIState {
     float terrain_height_scale = 1.0f;
 };
 
-class DebriefUI {
+class AfterActionUI {
 public:
-    DebriefUI() = default;
+    AfterActionUI() = default;
 
     void set_callbacks(UICallbacks cbs) { cbs_ = std::move(cbs); }
 
@@ -137,4 +137,4 @@ private:
     flecs::entity last_plot_entity_{};
 };
 
-} // namespace debrief
+} // namespace afteraction

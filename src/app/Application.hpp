@@ -8,16 +8,16 @@
 #include "../render/TrailRenderer.hpp"
 #include "../playback/PlaybackController.hpp"
 #include "../persistence/Recorder.hpp"
-#include "../ui/DebriefUI.hpp"
+#include "../ui/AfterActionUI.hpp"
 #include "../demo/DemoMode.hpp"
 #include <flecs.h>
 #include <raylib.h>
 #include <unordered_map>
 
-namespace debrief {
+namespace afteraction {
 
 struct AppConfig {
-    uint16_t    udp_port      = 5555;
+    uint16_t    udp_port      = 22522;
     std::string bind_addr     = "0.0.0.0";
     int         window_width  = 1600;
     int         window_height = 900;
@@ -97,7 +97,7 @@ private:
     TrailRenderer      trails_;
 
     persist::Recorder  recorder_;
-    DebriefUI          ui_;
+    AfterActionUI          ui_;
 
     demo::DemoMode     demo_;
     Vector3            camera_free_target_{ 0.0f, 0.0f, 0.0f };
@@ -116,4 +116,4 @@ private:
     bool clear_requested_ = false;
 };
 
-} // namespace debrief
+} // namespace afteraction

@@ -22,7 +22,7 @@
    inline constexpr SocketHandle kInvalidSocket = -1;
 #endif
 
-namespace debrief::net {
+namespace afteraction::net {
 
 struct ReceiverStats {
     uint64_t packets_received  = 0;
@@ -71,4 +71,4 @@ private:
     std::unordered_map<uint16_t, uint32_t> last_seq_;
 };
 
-} // namespace debrief::net
+} // namespace afteraction::net

@@ -26,7 +26,7 @@
 #include <fstream>
 #include <iostream>
 
-namespace debrief {
+namespace afteraction {
 
 void ConfigManager::load_config(UIState& state, const std::string& path) {
     try {
@@ -95,4 +95,4 @@ void ConfigManager::save_config(const UIState& state, const std::string& path) {
     }
 }
 
-} // namespace debrief
+} // namespace afteraction

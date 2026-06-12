@@ -4,7 +4,7 @@
 #include <array>
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  DEBRIEF UDP Wire Protocol  —  send packets to UDP port 5555
+//  AFTERACTION UDP Wire Protocol  —  send packets to UDP port 22522
 //
 //  Packet layout:
 //    [ BatchHeader   10 bytes ]
@@ -16,7 +16,7 @@
 //    ent = struct.pack('<IHB32sdddddddQ',                       # 103 bytes
 //              entity_id, entity_type, health, callsign_bytes,
 //              lat, lon, alt, phi, theta, psi, speed, time.time_ns())
-//    sock.sendto(hdr + ent + ent2, ('127.0.0.1', 5555))
+//    sock.sendto(hdr + ent + ent2, ('127.0.0.1', 22522))
 //
 //  See docs/PROTOCOL.md for the full field reference, units and examples.
 //
@@ -28,7 +28,7 @@
 //    phi   = roll     (positive = right bank, –180 to +180°)
 // ─────────────────────────────────────────────────────────────────────────────
 
-namespace debrief::net {
+namespace afteraction::net {
 
 // Maximum callsign length (including the null terminator) shared by the wire
 // format, the in-memory state and the recording format.
@@ -118,4 +118,4 @@ struct ParsedFrame {
     std::vector<EntityState> entities;
 };
 
-} // namespace debrief::net
+} // namespace afteraction::net

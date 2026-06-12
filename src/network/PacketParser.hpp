@@ -3,7 +3,7 @@
 #include <expected>
 #include <span>
 
-namespace debrief::net {
+namespace afteraction::net {
 
 enum class ParseError : uint8_t {
     TooShort,
@@ -21,4 +21,4 @@ public:
     parse(std::span<const std::byte> buf) noexcept;
 };
 
-} // namespace debrief::net
+} // namespace afteraction::net

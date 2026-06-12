@@ -7,14 +7,14 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # ── Options ────────────────────────────────────────────────────────────────────
-option(DEBRIEF_TRACY  "Enable Tracy profiler instrumentation" OFF)
-option(DEBRIEF_TESTS  "Build unit tests"                      OFF)
+option(AFTERACTION_TRACY  "Enable Tracy profiler instrumentation" OFF)
+option(AFTERACTION_TESTS  "Build unit tests"                      OFF)
 
 # ── Platform detection ─────────────────────────────────────────────────────────
 if(WIN32)
-    add_compile_definitions(DEBRIEF_WINDOWS)
+    add_compile_definitions(AFTERACTION_WINDOWS)
 elseif(APPLE)
-    add_compile_definitions(DEBRIEF_MACOS)
+    add_compile_definitions(AFTERACTION_MACOS)
 endif()
 
 # ── Global flags — applied to ALL targets including submodules ─────────────────
@@ -97,7 +97,7 @@ target_include_directories(rlimgui PUBLIC ${RLIMGUI_DIR})
 target_link_libraries(rlimgui PUBLIC imgui raylib)
 
 # ── Third-party: Tracy (optional) ─────────────────────────────────────────────
-if(DEBRIEF_TRACY)
+if(AFTERACTION_TRACY)
     add_subdirectory(third_party/tracy)
     add_compile_definitions(TRACY_ENABLE)
 endif()
@@ -116,9 +116,9 @@ if(TARGET yaml-cpp)
 endif()
 
 # ── Main executable ────────────────────────────────────────────────────────────
-file(GLOB_RECURSE DEBRIEF_SRC "src/*.cpp" "src/*.hpp")
+file(GLOB_RECURSE AFTERACTION_SRC "src/*.cpp" "src/*.hpp")
 
-add_executable(afteraction ${DEBRIEF_SRC})
+add_executable(afteraction ${AFTERACTION_SRC})
 
 # Embed the application icon into the Windows .exe (Explorer/Alt-Tab/title bar).
 # The runtime SetWindowIcon() in init_window() covers the live window on all
@@ -183,7 +183,7 @@ if(APPLE)
     )
 endif()
 
-if(DEBRIEF_TRACY)
+if(AFTERACTION_TRACY)
     target_link_libraries(afteraction PRIVATE TracyClient)
 endif()
 
@@ -194,7 +194,7 @@ add_custom_command(TARGET afteraction POST_BUILD
     COMMENT "Copying assets..."
 )
 
-if(DEBRIEF_TESTS)
+if(AFTERACTION_TESTS)
     enable_testing()
     add_subdirectory(tests)
 endif()

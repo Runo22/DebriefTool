@@ -3,7 +3,7 @@
 #include <raymath.h>
 #include <cmath>
 
-namespace debrief::ecs {
+namespace afteraction::ecs {
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Hermite cubic interpolation for position
@@ -116,4 +116,4 @@ void register_systems(flecs::world& world) {
         });
 }
 
-} // namespace debrief::ecs
+} // namespace afteraction::ecs
