@@ -120,6 +120,13 @@ file(GLOB_RECURSE DEBRIEF_SRC "src/*.cpp" "src/*.hpp")
 
 add_executable(afteraction ${DEBRIEF_SRC})
 
+# Embed the application icon into the Windows .exe (Explorer/Alt-Tab/title bar).
+# The runtime SetWindowIcon() in init_window() covers the live window on all
+# platforms; this is only for the on-disk .exe icon.
+if(WIN32)
+    target_sources(afteraction PRIVATE ${CMAKE_SOURCE_DIR}/assets/app_icon.rc)
+endif()
+
 target_include_directories(afteraction PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${IMGUI_DIR}

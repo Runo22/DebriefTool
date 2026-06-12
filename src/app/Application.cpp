@@ -94,6 +94,16 @@ void Application::init_window() {
     SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
     InitWindow(cfg_.window_width, cfg_.window_height, cfg_.window_title.c_str());
     SetTargetFPS(cfg_.target_fps);
+
+    // Window / taskbar icon. GLFW copies the pixels on SetWindowIcon, so the
+    // Image can be unloaded immediately. Must be RGBA8 for raylib.
+    Image icon = LoadImage("assets/icon.png");
+    if (icon.data) {
+        ImageFormat(&icon, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+        SetWindowIcon(icon);
+        UnloadImage(icon);
+    }
+
     rlImGuiSetup(true);
 
     ImPlot::CreateContext();
