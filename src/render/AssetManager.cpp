@@ -11,7 +11,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-namespace debrief {
+namespace afteraction {
 
 // Helper to merge multiple temporary meshes with local transforms into a single master Raylib Mesh.
 static Mesh merge_meshes(const std::vector<std::pair<Mesh, Matrix>>& parts) {
@@ -398,4 +398,4 @@ bool AssetManager::convert_assimp(const std::filesystem::path& path,
     return true;
 }
 
-} // namespace debrief
+} // namespace afteraction

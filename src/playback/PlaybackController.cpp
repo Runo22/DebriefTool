@@ -3,7 +3,7 @@
 #include <chrono>
 #include <cmath>
 
-namespace debrief {
+namespace afteraction {
 
 static uint64_t wall_ns() noexcept {
     return static_cast<uint64_t>(
@@ -77,4 +77,4 @@ void PlaybackController::clamp(uint64_t min_ns, uint64_t max_ns) noexcept {
     if (current_ns_ > max_ns) current_ns_ = max_ns;
 }
 
-} // namespace debrief
+} // namespace afteraction

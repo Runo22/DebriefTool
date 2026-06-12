@@ -1,0 +1,3 @@
+// Windows executable icon (shown in Explorer / Alt-Tab / title bar).
+// The lowest-numbered ICON resource becomes the application icon.
+1 ICON "icon.ico"

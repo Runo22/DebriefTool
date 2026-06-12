@@ -2,7 +2,7 @@
 #include <chrono>
 #include <cstring>
 
-namespace debrief::net {
+namespace afteraction::net {
 
 std::expected<ParsedFrame, ParseError>
 PacketParser::parse(std::span<const std::byte> buf) noexcept
@@ -66,4 +66,4 @@ PacketParser::parse(std::span<const std::byte> buf) noexcept
     return frame;
 }
 
-} // namespace debrief::net
+} // namespace afteraction::net

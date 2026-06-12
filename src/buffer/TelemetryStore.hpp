@@ -9,7 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace debrief {
+namespace afteraction {
 
 // ─── Per-entity state history (lives as an ECS component) ─────────────────────
 //
@@ -241,4 +241,4 @@ private:
     std::unordered_map<uint64_t, std::vector<net::EntityState>> entity_histories_;
 };
 
-} // namespace debrief
+} // namespace afteraction

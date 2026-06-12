@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-DEBRIEF  —  UDP test packet sender
-Sends a simple flight scenario (2 jets + 1 missile) to the debrief application.
+AFTERACTION  —  UDP test packet sender
+Sends a simple flight scenario (2 jets + 1 missile) to the afteraction application.
 
 Usage:
     python test_sender.py [--host HOST] [--port PORT] [--hz HZ]
@@ -68,7 +68,7 @@ def orbit(cx, cz, radius, omega, t):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--host', default='127.0.0.1')
-    ap.add_argument('--port', type=int, default=5555)
+    ap.add_argument('--port', type=int, default=22522)
     ap.add_argument('--hz',   type=float, default=10.0, help='Update rate (default 10 Hz)')
     args = ap.parse_args()
 

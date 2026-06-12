@@ -1,10 +1,10 @@
-# Debrief UDP Telemetry Protocol
+# AfterAction UDP Telemetry Protocol
 
-This document describes exactly what to send to Debrief over UDP, what each
+This document describes exactly what to send to AfterAction over UDP, what each
 field means, the units, valid ranges, and copy-paste examples.
 
 - **Transport:** UDP (one datagram = one batch of entity updates)
-- **Default port:** `5555` (change with `--port N`, or in **Settings → Network**)
+- **Default port:** `22522` (change with `--port N`, or in **Settings → Network**)
 - **Byte order:** little-endian
 - **Packing:** no padding (`#pragma pack(1)` / `struct` with `<` in Python)
 
@@ -21,7 +21,7 @@ A datagram is one `BatchHeader` followed by `count` `EntityUpdate` records:
 ```
 
 Send **one packet per simulation tick** containing every entity you want to
-show. A reasonable rate is 5–60 Hz; Debrief interpolates smoothly between
+show. A reasonable rate is 5–60 Hz; AfterAction interpolates smoothly between
 frames so you do not need a high rate.
 
 ---
@@ -54,13 +54,13 @@ Python format string: `"<4sBBI"`
 | `theta`    | `float64`   | 8     | degrees      | Pitch. `-90`..`+90`. Positive = nose up. |
 | `psi`      | `float64`   | 8     | degrees      | Heading. `0` = North, `90` = East, clockwise, `0`..`360`. |
 | `speed`    | `float64`   | 8     | m/s          | Airspeed in metres/second. `0` = unknown. Used for the velocity vector and chase-cam lead. |
-| `time_ns`  | `uint64`    | 8     | ns           | UNIX time in **nanoseconds**. Send `0` to have Debrief stamp it with the receive time. |
+| `time_ns`  | `uint64`    | 8     | ns           | UNIX time in **nanoseconds**. Send `0` to have AfterAction stamp it with the receive time. |
 
 Python format string: `"<IHB32sdddddddQ"`
 
 ### Coordinate notes
 
-- Debrief converts `lat`/`lon` to a local East/North/Up scene relative to the
+- AfterAction converts `lat`/`lon` to a local East/North/Up scene relative to the
   **first** position it sees (so the scene stays near the origin), but the
   vertical axis is the **absolute** `alt` — every entity reports its true MSL
   altitude regardless of arrival order.
@@ -130,7 +130,7 @@ int main() {
     int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
     sockaddr_in dst{};
     dst.sin_family = AF_INET;
-    dst.sin_port   = htons(5555);
+    dst.sin_port   = htons(22522);
     ::inet_pton(AF_INET, "127.0.0.1", &dst.sin_addr);
 
     uint32_t seq = 0;
@@ -193,7 +193,7 @@ EntityUpdate make_entity(uint32_t id, uint16_t type, const char* callsign,
 }
 ```
 
-> **Endianness:** the structs are sent in the host's native byte order. Debrief
+> **Endianness:** the structs are sent in the host's native byte order. AfterAction
 > expects little-endian (the overwhelmingly common case on x86/ARM). On a
 > big-endian host you would need to byte-swap each field before sending.
 
@@ -204,7 +204,7 @@ ships as [`scripts/test_sender.py`](../scripts/test_sender.py) — handy for
 exercising the app without writing any code:
 
 ```sh
-python scripts/test_sender.py --host 127.0.0.1 --port 5555 --hz 10
+python scripts/test_sender.py --host 127.0.0.1 --port 22522 --hz 10
 ```
 
 ---

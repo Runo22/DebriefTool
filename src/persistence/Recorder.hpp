@@ -10,23 +10,23 @@
 #include <thread>
 #include <vector>
 
-namespace debrief::persist {
+namespace afteraction::persist {
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Recorder
 //
-//  Writes entity state to disk in the .dbr binary format.
+//  Writes entity state to disk in the .aar binary format.
 //  Uses a dedicated I/O thread with a write queue to keep the main thread
 //  from stalling on disk latency.
 //
 //  Usage:
-//    recorder.start("session_2025.dbr");
+//    recorder.start("session_2025.aar");
 //    // each frame:
 //    recorder.submit(timestamp_ns, source_id, entities);
 //    recorder.stop();  // flushes, writes index, writes footer
 //
 //  "Save Last N Seconds" (dashcam):
-//    recorder.save_dashcam(store, seconds, "dashcam.dbr");
+//    recorder.save_dashcam(store, seconds, "dashcam.aar");
 // ─────────────────────────────────────────────────────────────────────────────
 
 class Recorder {
@@ -53,7 +53,7 @@ public:
                              const std::filesystem::path& out_path,
                              const std::string& session_name = "") noexcept;
 
-    // Loads a .dbr file back into a TelemetryStore for playback.
+    // Loads a .aar file back into a TelemetryStore for playback.
     static bool load_into(const std::filesystem::path& path,
                           TelemetryStore& store) noexcept;
 
@@ -86,4 +86,4 @@ private:
     std::atomic<uint64_t>       frames_written_{ 0 };
 };
 
-} // namespace debrief::persist
+} // namespace afteraction::persist

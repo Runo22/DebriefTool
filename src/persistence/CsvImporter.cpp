@@ -7,7 +7,7 @@
 #include <fstream>
 #include <string>
 
-namespace debrief::persist {
+namespace afteraction::persist {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -137,4 +137,4 @@ size_t CsvImporter::import(const std::filesystem::path& path, RowCallback cb) co
     return count;
 }
 
-} // namespace debrief::persist
+} // namespace afteraction::persist

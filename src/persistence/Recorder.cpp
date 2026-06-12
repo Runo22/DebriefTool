@@ -3,7 +3,7 @@
 #include <chrono>
 #include <thread>
 
-namespace debrief::persist {
+namespace afteraction::persist {
 
 Recorder::Recorder()  = default;
 Recorder::~Recorder() { stop(); }
@@ -212,7 +212,7 @@ bool Recorder::export_slice(const TelemetryStore& store,
     return true;
 }
 
-// ── .dbr loader ──────────────────────────────────────────────────────────────
+// ── .aar loader ──────────────────────────────────────────────────────────────
 bool Recorder::load_into(const std::filesystem::path& path,
                          TelemetryStore& store) noexcept
 {
@@ -267,4 +267,4 @@ bool Recorder::load_into(const std::filesystem::path& path,
     return true;
 }
 
-} // namespace debrief::persist
+} // namespace afteraction::persist

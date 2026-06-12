@@ -1,13 +1,13 @@
 #pragma once
 #include <string>
-#include "../ui/DebriefUI.hpp"
+#include "../ui/AfterActionUI.hpp"
 
-namespace debrief {
+namespace afteraction {
 
 class ConfigManager {
 public:
-    static void load_config(UIState& state, const std::string& path = "debrief_config.yaml");
-    static void save_config(const UIState& state, const std::string& path = "debrief_config.yaml");
+    static void load_config(UIState& state, const std::string& path = "afteraction_config.yaml");
+    static void save_config(const UIState& state, const std::string& path = "afteraction_config.yaml");
 };
 
-} // namespace debrief
+} // namespace afteraction

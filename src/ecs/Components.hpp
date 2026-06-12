@@ -16,7 +16,7 @@
 //    reads; the raw history is what the interpolation system writes.
 // ─────────────────────────────────────────────────────────────────────────────
 
-namespace debrief::ecs {
+namespace afteraction::ecs {
 
 // ── Identity ──────────────────────────────────────────────────────────────────
 struct EntityMeta {
@@ -76,4 +76,4 @@ struct Selected {};   // tag component — entity is currently selected in UI
 // ── Camera follow ─────────────────────────────────────────────────────────────
 struct CameraTarget {};  // tag — camera tracks this entity
 
-} // namespace debrief::ecs
+} // namespace afteraction::ecs

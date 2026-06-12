@@ -7,7 +7,7 @@
 #  pragma comment(lib, "ws2_32.lib")
 #endif
 
-namespace debrief::net {
+namespace afteraction::net {
 
 namespace {
 #ifdef _WIN32
@@ -143,4 +143,4 @@ void UdpReceiver::recv_loop() {
     }
 }
 
-} // namespace debrief::net
+} // namespace afteraction::net

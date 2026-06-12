@@ -1,6 +1,6 @@
-# Debrief
+# AfterAction
 
-Real-time 3D tactical telemetry visualization and post-action review tool.
+Real-time 3D tactical telemetry visualization and post-action review (AAR) tool.
 
 Receives spatial data over UDP, renders it in 3D, records everything, and provides full VCR-style playback — scrub, rewind, fast-forward through any engagement.
 
@@ -14,7 +14,7 @@ Receives spatial data over UDP, renders it in 3D, records everything, and provid
 git clone --recurse-submodules <this-repo>
 scripts\bootstrap.bat
 cmake --build build --config Release --parallel
-build\Release\debrief.exe --demo
+build\Release\afteraction.exe --demo
 ```
 
 The `--demo` flag runs a built-in scripted scenario (two jets, a missile, an AAA site, and a helicopter) so you can evaluate the tool without any external data source.
@@ -31,7 +31,7 @@ Requirements: **Visual Studio 2022** with C++ workload, **CMake 3.25+**, **Git**
 scripts\bootstrap.bat
 ```
 
-This runs `git submodule update --init --recursive` then configures CMake for VS 2022 x64. Open `build\debrief.sln` in Visual Studio, or build from the command line:
+This runs `git submodule update --init --recursive` then configures CMake for VS 2022 x64. Open `build\afteraction.sln` in Visual Studio, or build from the command line:
 
 ```bat
 cmake --build build --config RelWithDebInfo --parallel
@@ -49,7 +49,7 @@ bash scripts/bootstrap.sh
 
 ## UDP Packet Format
 
-Send packets to **UDP port 5555** (configurable with `--port`, or in-app under
+Send packets to **UDP port 22522** (configurable with `--port`, or in-app under
 **Settings → Network**).
 
 > **Full reference:** see **[`docs/PROTOCOL.md`](docs/PROTOCOL.md)** for every field,
@@ -150,7 +150,7 @@ int main() {
     int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
     sockaddr_in dst{};
     dst.sin_family = AF_INET;
-    dst.sin_port   = htons(5555);
+    dst.sin_port   = htons(22522);
     ::inet_pton(AF_INET, "127.0.0.1", &dst.sin_addr);
 
     uint32_t seq = 0;
@@ -179,7 +179,7 @@ the full field reference. A ready-to-run Python demo with a scripted flight
 scenario is at [`scripts/test_sender.py`](scripts/test_sender.py):
 
 ```sh
-python scripts/test_sender.py --host 127.0.0.1 --port 5555 --hz 10
+python scripts/test_sender.py --host 127.0.0.1 --port 22522 --hz 10
 ```
 
 ---
@@ -226,10 +226,10 @@ assets_.map_type(net::TYPE_JET, "jet");
 ## Command-line flags
 
 ```
-debrief.exe [options]
+afteraction.exe [options]
 
   --demo            Run built-in flight demo (no UDP required)
-  --port  N         UDP listen port (default 5555)
+  --port  N         UDP listen port (default 22522)
   --addr  IP        Bind address   (default 0.0.0.0)
   --width  N        Window width   (default 1600)
   --height N        Window height  (default 900)
@@ -245,7 +245,7 @@ debrief.exe [options]
 - **VCR playback** — play, pause, fast-forward (×0.25 to ×8), rewind, scrub
 - **Timeline** — ImPlot-powered scrubber with altitude chart for the selected entity
 - **Dashcam buffer** — "Save Last N Seconds" saves a rolling window to disk instantly
-- **Custom binary format** (`.dbr`) — sparse-indexed for O(log N) seek
+- **Custom binary format** (`.aar`) — sparse-indexed for O(log N) seek
 - **CSV import** — flexible column-mapping for importing logs from flight sims or DCS
 - **Multi-source ready** — `source_id` field supports multiple simultaneous UDP sources
 

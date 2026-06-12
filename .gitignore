@@ -44,7 +44,7 @@ desktop.ini
 *.obj
 
 # Session files
-*.dbr
+*.aar
 
 # Python cache
 __pycache__/

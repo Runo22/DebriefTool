@@ -7,7 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace debrief::persist {
+namespace afteraction::persist {
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  CSV Importer
@@ -84,4 +84,4 @@ private:
     static float deg_to_rad(float deg) noexcept { return deg * 0.017453293f; }
 };
 
-} // namespace debrief::persist
+} // namespace afteraction::persist

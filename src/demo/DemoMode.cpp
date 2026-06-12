@@ -9,7 +9,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 
-namespace debrief::demo {
+namespace afteraction::demo {
 
 static uint64_t now_ns() {
     return static_cast<uint64_t>(
@@ -194,4 +194,4 @@ std::vector<net::EntityState> DemoMode::tick(float dt_sec) {
     return states;
 }
 
-} // namespace debrief::demo
+} // namespace afteraction::demo
