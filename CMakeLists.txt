@@ -6,6 +6,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# All executables go in <build>/bin (with their assets copied alongside).
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+
+# We ship ONLY AfterAction. The third-party deps are added with EXCLUDE_FROM_ALL
+# (below) so they still build as link dependencies but their own install() rules
+# are skipped — `cmake --install` then lays down AfterAction + assets and nothing
+# else (no flecs/raylib headers, libs, or cmake config).
+
 # ── Options ────────────────────────────────────────────────────────────────────
 option(AFTERACTION_TRACY  "Enable Tracy profiler instrumentation" OFF)
 option(AFTERACTION_TESTS  "Build unit tests"                      OFF)
@@ -51,11 +59,11 @@ endif()
 # ── Third-party: Raylib ────────────────────────────────────────────────────────
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(BUILD_GAMES    OFF CACHE BOOL "" FORCE)
-add_subdirectory(third_party/raylib)
+add_subdirectory(third_party/raylib EXCLUDE_FROM_ALL)
 
 # ── Third-party: Flecs ────────────────────────────────────────────────────────
 set(FLECS_STATIC ON CACHE BOOL "" FORCE)
-add_subdirectory(third_party/flecs)
+add_subdirectory(third_party/flecs EXCLUDE_FROM_ALL)
 
 # ── Third-party: Assimp (only the importers we need — much faster compile) ────
 set(ASSIMP_WARNINGS_AS_ERRORS         OFF CACHE BOOL "" FORCE)
@@ -67,7 +75,7 @@ set(ASSIMP_BUILD_TESTS          OFF CACHE BOOL "" FORCE)
 set(ASSIMP_INSTALL              OFF CACHE BOOL "" FORCE)
 set(ASSIMP_NO_EXPORT            ON  CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS           OFF CACHE BOOL "" FORCE)
-add_subdirectory(third_party/assimp)
+add_subdirectory(third_party/assimp EXCLUDE_FROM_ALL)
 
 # ── Third-party: ImGui + ImPlot ───────────────────────────────────────────────
 set(IMGUI_DIR  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
@@ -98,7 +106,7 @@ target_link_libraries(rlimgui PUBLIC imgui raylib)
 
 # ── Third-party: Tracy (optional) ─────────────────────────────────────────────
 if(AFTERACTION_TRACY)
-    add_subdirectory(third_party/tracy)
+    add_subdirectory(third_party/tracy EXCLUDE_FROM_ALL)
     add_compile_definitions(TRACY_ENABLE)
 endif()
 
@@ -106,7 +114,8 @@ endif()
 set(YAML_CPP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
 set(YAML_CPP_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
 set(YAML_CPP_BUILD_CONTRIB OFF CACHE BOOL "" FORCE)
-add_subdirectory(third_party/yaml-cpp)
+set(YAML_CPP_INSTALL OFF CACHE BOOL "" FORCE)
+add_subdirectory(third_party/yaml-cpp EXCLUDE_FROM_ALL)
 
 # Treat yaml-cpp's headers as SYSTEM headers for consumers so their warnings are
 # never escalated by our strict diagnostics (-Wall/-Wextra, /W4 /WX) when pulled
@@ -119,6 +128,14 @@ endif()
 file(GLOB_RECURSE AFTERACTION_SRC "src/*.cpp" "src/*.hpp")
 
 add_executable(afteraction ${AFTERACTION_SRC})
+
+# Final binary is "AfterAction" (AfterAction.exe on Windows).
+set_target_properties(afteraction PROPERTIES OUTPUT_NAME "AfterAction")
+
+# No console window on Release (GUI subsystem); keep the console on Debug for
+# live logs. Logging is also mirrored to <exe_dir>/logs/AfterAction.log, and a
+# crash handler flushes that log — see install_crash_logging() in main.cpp.
+set_target_properties(afteraction PROPERTIES WIN32_EXECUTABLE $<CONFIG:Release>)
 
 # Embed the application icon into the Windows .exe (Explorer/Alt-Tab/title bar).
 # The runtime SetWindowIcon() in init_window() covers the live window on all
@@ -208,12 +225,21 @@ if(APPLE)
         "-framework CoreAudio" "-framework AudioToolbox")
 endif()
 
-# ── Post-build: copy assets ────────────────────────────────────────────────────
+# ── Post-build: copy assets next to the executable (build/bin/assets) ──────────
 add_custom_command(TARGET afteraction POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/assets $<TARGET_FILE_DIR:afteraction>/assets
     COMMENT "Copying assets..."
 )
+
+# ── Install — AfterAction only (third-party installs were skipped above) ───────
+include(GNUInstallDirs)
+# App + preview tool go in <prefix>/bin, with assets/ alongside so the app's
+# exe-relative asset loading works from the install tree too.
+install(TARGETS afteraction RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS hangar      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
+install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets
+        DESTINATION ${CMAKE_INSTALL_BINDIR})
 
 if(AFTERACTION_TESTS)
     enable_testing()
