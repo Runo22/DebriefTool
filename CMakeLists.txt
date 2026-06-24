@@ -256,6 +256,14 @@ install(TARGETS hangar      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets
         DESTINATION ${CMAKE_INSTALL_BINDIR})
 
+# Ship the runtime libraries the binaries actually NEED to run on a clean machine.
+# All our third-party deps are static-linked, so the only runtime dependency is
+# the platform C/C++ runtime — on Windows that's the MSVC redist DLLs (VCRUNTIME/
+# MSVCP), which we drop next to the exe. No-op on Linux/macOS (system libc).
+set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION ${CMAKE_INSTALL_BINDIR})
+set(CMAKE_INSTALL_SYSTEM_RUNTIME_COMPONENT Runtime)
+include(InstallRequiredSystemLibraries)
+
 if(AFTERACTION_TESTS)
     enable_testing()
     add_subdirectory(tests)

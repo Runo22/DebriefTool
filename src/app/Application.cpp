@@ -274,6 +274,7 @@ void Application::clear_all_entities() {
     live_states_.clear();
     ui_.state().selected_entity = {};
     origin_set_ = false;
+    auto_framed_ = false;   // re-frame the next single track that arrives
     playback_.stop();   // return to live mode
     TraceLog(LOG_INFO, "Cleared all entities and telemetry store");
 }
@@ -705,11 +706,39 @@ void Application::update_ecs(float dt) {
     }
     world_.progress(dt);
 
+    maybe_auto_frame();
+
     // Camera follow
     world_.query<const ecs::CameraTarget, const ecs::Position>()
         .each([&](const ecs::CameraTarget&, const ecs::Position& p) {
             camera_.target = p.v;
         });
+}
+
+// When the very first entity shows up and it's the ONLY active track, move the
+// free-orbit camera onto it (with a sensible distance) so it's actually visible
+// instead of off-screen at the default demo framing. One-shot; reset on Clear.
+void Application::maybe_auto_frame() {
+    if (auto_framed_) return;
+    auto& st = ui_.state();
+    if (st.camera_mode != 0) return;   // don't fight Focus/Chase modes
+
+    int active = 0;
+    Vector3 p{};
+    world_.query<const ecs::EntityMeta, const ecs::Position>()
+        .each([&](const ecs::EntityMeta& meta, const ecs::Position& pos) {
+            if (meta.active) { ++active; p = pos.v; }
+        });
+
+    if (active == 0) return;           // nothing yet — keep waiting
+    auto_framed_ = true;               // only attempt at the first appearance
+    if (active != 1) return;           // multiple arrived at once — leave default view
+
+    // Centre on the track (render space applies altitude exaggeration to Y) and
+    // pull in to a distance that frames a single entity nicely.
+    camera_free_target_ = { p.x, p.y * st.altitude_exaggerate, p.z };
+    st.camera_distance  = std::clamp(st.entity_3d_scale * 80.0f, 800.0f, 8000.0f);
+    TraceLog(LOG_INFO, "Auto-framed camera on first entity");
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────────────

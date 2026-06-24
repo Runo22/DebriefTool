@@ -73,6 +73,9 @@ private:
     // at the new model (newly spawned entities pick it up via get_for_type).
     void repoint_entities_of_type(uint16_t type);
 
+    // Frame the camera on the first entity when it is the only active track.
+    void maybe_auto_frame();
+
     // Replay-file loaders (shared by the typed path, and the native file dialog).
     void load_session(const std::string& path);   // .aar recording
     void import_csv(const std::string& path);      // flexible CSV log
@@ -133,6 +136,9 @@ private:
     // Set by the UI "Clear" callback; the actual wipe runs at the top of the
     // next tick() (shallow stack, outside ECS iteration / ImGui rendering).
     bool clear_requested_ = false;
+    // One-shot: frame the camera on the first entity when it's the only one, so a
+    // single incoming track is actually visible. Reset on Clear.
+    bool auto_framed_ = false;
 };
 
 } // namespace afteraction
