@@ -23,18 +23,29 @@ The `--demo` flag runs a built-in scripted scenario (two jets, a missile, an AAA
 
 ## Building
 
-### Windows (primary)
+First fetch submodules: `git submodule update --init --recursive`.
 
-Requirements: **Visual Studio 2022** with C++ workload, **CMake 3.25+**, **Git**.
+### Windows (primary) — CMake presets (Ninja + cl.exe, x64)
+
+Requirements: **Visual Studio 2022** Build Tools, **CMake 3.25+**, **Ninja**, **Git**.
+From an **x64 Native Tools Command Prompt for VS**:
 
 ```bat
-scripts\bootstrap.bat
+cmake --preset windows-release      :: or windows-debug
+cmake --build --preset windows-release
 ```
 
-This runs `git submodule update --init --recursive` then configures CMake for VS 2022 x64. Open `build\afteraction.sln` in Visual Studio, or build from the command line:
+Output goes to `build\windows-release\bin\AfterAction.exe` (with `assets\`
+alongside). Release builds have **no console window** — runtime logs go to
+`bin\logs\AfterAction.log`. (You can still use `scripts\bootstrap.bat` + a VS
+solution if you prefer.)
 
-```bat
-cmake --build build --config RelWithDebInfo --parallel
+### Linux
+
+```sh
+cmake --preset linux-release        # or linux-debug
+cmake --build --preset linux-release
+./build/linux-release/bin/AfterAction --demo
 ```
 
 ### macOS
@@ -44,6 +55,12 @@ Requirements: **Xcode Command Line Tools**, **CMake 3.25+**.
 ```sh
 bash scripts/bootstrap.sh
 ```
+
+### Install
+
+`cmake --install <build-dir> --prefix <dir>` lays down just **AfterAction** +
+`hangar` + `assets/` under `<dir>/bin` (no third-party libs/headers). Recordings,
+config, and logs are written next to the executable at runtime.
 
 ---
 
