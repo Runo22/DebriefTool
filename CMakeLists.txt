@@ -134,8 +134,13 @@ set_target_properties(afteraction PROPERTIES OUTPUT_NAME "AfterAction")
 
 # No console window on Release (GUI subsystem); keep the console on Debug for
 # live logs. Logging is also mirrored to <exe_dir>/logs/AfterAction.log, and a
-# crash handler flushes that log — see install_crash_logging() in main.cpp.
+# crash handler flushes that log — see init_logging() in main.cpp.
 set_target_properties(afteraction PROPERTIES WIN32_EXECUTABLE $<CONFIG:Release>)
+# The GUI (/SUBSYSTEM:WINDOWS) Release build still uses our int main() rather than
+# WinMain.
+if(MSVC)
+    target_link_options(afteraction PRIVATE $<$<CONFIG:Release>:/ENTRY:mainCRTStartup>)
+endif()
 
 # Embed the application icon into the Windows .exe (Explorer/Alt-Tab/title bar).
 # The runtime SetWindowIcon() in init_window() covers the live window on all
