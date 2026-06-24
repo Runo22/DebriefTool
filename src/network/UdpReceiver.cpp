@@ -49,6 +49,13 @@ bool UdpReceiver::open_socket(const std::string& addr, uint16_t port) noexcept {
     sock_ = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock_ == kInvalidSocket) return false;
 
+    // Allow immediate re-bind to the same port (e.g. after a restart from the
+    // Settings → Network "Apply", or a quick relaunch) instead of failing while
+    // the previous socket lingers in TIME_WAIT.
+    int reuse = 1;
+    ::setsockopt(sock_, SOL_SOCKET, SO_REUSEADDR,
+                 reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+
     // Set a receive timeout so the loop can check the stop flag periodically.
 #ifdef _WIN32
     DWORD tv = 100; // ms

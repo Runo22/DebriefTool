@@ -52,6 +52,10 @@ private:
     // draw_terrain() so ground markers/drop-lines can sit on the terrain even when
     // it has relief. Returns 0 when terrain is disabled.
     float terrain_height_at(float wx, float wz) const;
+
+    // A ground ring that follows the terrain relief (vertices lifted to terrain
+    // height) — used for selection/altitude markers so they don't sink into hills.
+    void draw_ground_ring(float cx, float cz, float radius, Color col) const;
     void render_ui();
     void handle_input(float dt);
     void update_camera_state(float dt);
@@ -69,6 +73,18 @@ private:
     // Restarts the UDP receiver on a new bind address / port (from the UI).
     void apply_network_settings(const std::string& bind_addr, uint16_t port);
 
+    // After a model finishes async-loading, point existing entities of that type
+    // at the new model (newly spawned entities pick it up via get_for_type).
+    void repoint_entities_of_type(uint16_t type);
+
+    // Frame the camera on the first entity when it is the only active track.
+    void maybe_auto_frame();
+
+    // Replay-file loaders (shared by the typed path, and the native file dialog).
+    void load_session(const std::string& path);   // .aar recording
+    void import_csv(const std::string& path);      // flexible CSV log
+    void browse_and_load();                        // native open dialog → dispatch
+
     // Lazy-set scene origin from first received position; converts subsequent
     // lat/lon/alt to ENU metres and fills state.position[].
     // For demo states (position already ENU), pass enu_already=true.
@@ -79,6 +95,16 @@ private:
     uint64_t entity_key(uint32_t src, uint32_t eid) const noexcept {
         return (static_cast<uint64_t>(src) << 32) | eid;
     }
+
+    // ── Filesystem layout (everything relative to the EXECUTABLE, not the cwd) ──
+    // Directory containing the running executable (with trailing separator).
+    std::string app_dir() const;
+    // <app_dir>/assets/<rel>  — bundled assets are copied next to the exe.
+    std::string asset_path(const std::string& rel) const;
+    // <app_dir>/recordings/ , created on demand. Sessions/dashcams are saved here.
+    std::string recordings_dir() const;
+    // <app_dir>/afteraction_config.yaml
+    std::string config_path() const;
 
     // ── Subsystems ────────────────────────────────────────────────────────────
     AppConfig cfg_;
@@ -114,6 +140,9 @@ private:
     // Set by the UI "Clear" callback; the actual wipe runs at the top of the
     // next tick() (shallow stack, outside ECS iteration / ImGui rendering).
     bool clear_requested_ = false;
+    // One-shot: frame the camera on the first entity when it's the only one, so a
+    // single incoming track is actually visible. Reset on Clear.
+    bool auto_framed_ = false;
 };
 
 } // namespace afteraction

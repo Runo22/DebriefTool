@@ -11,8 +11,11 @@
 #include <algorithm>
 #include <initializer_list>
 #include <vector>
+#include <filesystem>
+#include <cctype>
 #include "Config.hpp"
 #include "../persistence/CsvImporter.hpp"
+#include "tinyfiledialogs.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -75,10 +78,28 @@ static Quaternion euler_to_quat(float phi_deg, float theta_deg, float psi_deg)
 Application::Application(AppConfig cfg)
     : cfg_(std::move(cfg)), udp_receiver_(inbound_queue_) {}
 
+// ── Paths anchored to the executable's directory (not the working directory) ──
+std::string Application::app_dir() const {
+    const char* d = GetApplicationDirectory();   // ends with a path separator
+    return d ? std::string(d) : std::string();
+}
+std::string Application::asset_path(const std::string& rel) const {
+    return app_dir() + "assets/" + rel;
+}
+std::string Application::recordings_dir() const {
+    std::string dir = app_dir() + "recordings";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);   // no-op if it already exists
+    return dir + "/";
+}
+std::string Application::config_path() const {
+    return app_dir() + "afteraction_config.yaml";
+}
+
 Application::~Application() {
     if (!cfg_.demo_mode) udp_receiver_.stop();
     recorder_.stop();
-    ConfigManager::save_config(ui_.state(), "afteraction_config.yaml");
+    ConfigManager::save_config(ui_.state(), config_path());
     // Free GL resources (models/meshes) while the GL context is still alive.
     // The AssetManager member destructor runs after this body — i.e. after
     // CloseWindow() has destroyed the context — so unloading there would make GL
@@ -98,8 +119,8 @@ void Application::init_window() {
     // Window / taskbar icon — prefer the rounded, transparent-corner variant;
     // fall back to the square one. GLFW copies the pixels on SetWindowIcon, so
     // the Image can be unloaded immediately. Must be RGBA8 for raylib.
-    Image icon = LoadImage("assets/icon_rounded.png");
-    if (!icon.data) icon = LoadImage("assets/icon.png");
+    Image icon = LoadImage(asset_path("icon_rounded.png").c_str());
+    if (!icon.data) icon = LoadImage(asset_path("icon.png").c_str());
     if (icon.data) {
         ImageFormat(&icon, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
         SetWindowIcon(icon);
@@ -129,9 +150,26 @@ void Application::init_assets() {
     // Create detailed procedural composite models now that InitWindow() has initialized the GPU context
     assets_.init_procedural();
 
-    // To load custom models:
-    //   assets_.load("my_jet", "assets/models/jet.glb", 0.01f);
-    //   assets_.map_type(net::TYPE_JET, "my_jet");
+    // Custom models are configured in assets/models.yaml (type → file/scale/tint/
+    // base-rotation) — no recompile needed. They load ASYNCHRONOUSLY: we only
+    // *request* them here so the window opens instantly; the worker thread parses
+    // the files and tick() uploads + hot-swaps them in over the next frames.
+    for (const auto& s : ConfigManager::load_model_manifest(asset_path("models.yaml"))) {
+        Color tint{ s.tint[0], s.tint[1], s.tint[2], 255 };
+        Quaternion base_rot = QuaternionFromEuler(s.pitch * DEG2RAD,
+                                                  s.yaw   * DEG2RAD,
+                                                  s.roll  * DEG2RAD);
+        assets_.request_load(s.file, asset_path(s.file), s.type, s.scale, tint, base_rot);
+        TraceLog(LOG_INFO, "Queued model '%s' for type %u", s.file.c_str(), s.type);
+        // Seed the Settings → Models UI with current bindings.
+        UIState::ModelBinding b;
+        b.type = s.type;
+        snprintf(b.file, sizeof(b.file), "%s", s.file.c_str());
+        b.scale = s.scale;
+        b.tint[0] = s.tint[0]/255.0f; b.tint[1] = s.tint[1]/255.0f; b.tint[2] = s.tint[2]/255.0f;
+        b.yaw = s.yaw; b.pitch = s.pitch; b.roll = s.roll;
+        ui_.state().model_bindings.push_back(b);
+    }
 }
 
 void Application::init_camera() {
@@ -155,83 +193,33 @@ void Application::init_camera() {
     ui_.state().far_clip_plane  = 2000000.0f;
 
     // Load config
-    ConfigManager::load_config(ui_.state(), "afteraction_config.yaml");
+    ConfigManager::load_config(ui_.state(), config_path());
 }
 
 void Application::init_ui_callbacks() {
     UICallbacks cbs;
     cbs.on_record_start = [this] {
-        char fn[128];
+        char name[64];
         time_t t = time(nullptr);
         tm* lt   = localtime(&t);
-        strftime(fn, sizeof(fn), "session_%Y%m%d_%H%M%S.aar", lt);
-        recorder_.start(fn, fn);
+        strftime(name, sizeof(name), "session_%Y%m%d_%H%M%S.aar", lt);
+        std::string path = recordings_dir() + name;   // <app_dir>/recordings/
+        recorder_.start(path, name);
+        TraceLog(LOG_INFO, "Recording to %s", path.c_str());
     };
     cbs.on_record_stop = [this] { recorder_.stop(); };
     cbs.on_save_dashcam = [this](float secs) {
-        char fn[128];
+        char name[64];
         time_t t = time(nullptr);
         tm* lt   = localtime(&t);
-        strftime(fn, sizeof(fn), "dashcam_%Y%m%d_%H%M%S.aar", lt);
-        persist::Recorder::export_slice(store_, secs, fn, "dashcam");
+        strftime(name, sizeof(name), "dashcam_%Y%m%d_%H%M%S.aar", lt);
+        std::string path = recordings_dir() + name;   // <app_dir>/recordings/
+        persist::Recorder::export_slice(store_, secs, path, "dashcam");
+        TraceLog(LOG_INFO, "Saved dashcam to %s", path.c_str());
     };
-    cbs.on_load_file = [this](std::string path) {
-        store_.clear();
-        persist::Recorder::load_into(path, store_);
-        auto [ts, te] = store_.time_range_ns();
-        playback_.seek(ts);
-        playback_.pause();
-    };
-    cbs.on_load_csv = [this](std::string path) {
-        // Flexible importer: map the column names commonly emitted by sim/ACMI
-        // exporters. Only columns actually present in the file are used.
-        persist::CsvImporter imp;
-        using F = persist::CsvField;
-        auto m = [&](std::initializer_list<const char*> names, F f) {
-            for (const char* n : names) imp.map(n, f);
-        };
-        m({"time", "timestamp", "t", "sec", "seconds"},   F::TimestampSec);
-        m({"time_ms", "ms"},                               F::TimestampMs);
-        m({"time_ns", "ns"},                               F::TimestampNs);
-        m({"id", "entity_id", "entityid"},                 F::EntityId);
-        m({"type", "entity_type"},                         F::EntityType);
-        m({"source", "source_id"},                         F::SourceId);
-        m({"callsign", "name"},                            F::Callsign);
-        m({"x", "pos_x", "east", "posx"},                  F::PosX);
-        m({"y", "alt", "altitude", "up", "posy"},          F::PosY);
-        m({"z", "pos_z", "north", "posz"},                 F::PosZ);
-        m({"vx", "vel_x"}, F::VelX);  m({"vy", "vel_y"}, F::VelY);  m({"vz", "vel_z"}, F::VelZ);
-        m({"yaw", "heading", "psi"},                       F::YawDeg);
-        m({"pitch", "theta"},                              F::PitchDeg);
-        m({"roll", "phi"},                                 F::RollDeg);
-        m({"health", "hp"},                                F::Health);
-
-        std::vector<net::EntityState> states = imp.import_all(path);
-        if (states.empty()) return;
-
-        // Group rows by timestamp into per-frame snapshots, in ascending order.
-        std::stable_sort(states.begin(), states.end(),
-            [](const net::EntityState& a, const net::EntityState& b) {
-                return a.timestamp_ns < b.timestamp_ns;
-            });
-
-        store_.clear();
-        std::vector<net::EntityState> frame;
-        uint64_t frame_ts = states.front().timestamp_ns;
-        auto flush = [&] {
-            if (!frame.empty()) store_.ingest(frame_ts, frame);
-            frame.clear();
-        };
-        for (auto& s : states) {
-            if (s.timestamp_ns != frame_ts) { flush(); frame_ts = s.timestamp_ns; }
-            frame.push_back(s);
-        }
-        flush();
-
-        auto [ts, te] = store_.time_range_ns();
-        playback_.seek(ts);
-        playback_.pause();
-    };
+    cbs.on_load_file   = [this](std::string path) { load_session(path); };
+    cbs.on_load_csv    = [this](std::string path) { import_csv(path); };
+    cbs.on_browse_file = [this] { browse_and_load(); };
     cbs.on_load_model = [this](uint16_t type_id, std::string path) {
         if (assets_.load(path, path, 1.0f))
             assets_.map_type(type_id, path);
@@ -239,6 +227,29 @@ void Application::init_ui_callbacks() {
     cbs.on_clear_entities = [this] { clear_requested_ = true; };
     cbs.on_apply_network  = [this](std::string addr, uint16_t port) {
         apply_network_settings(addr, port);
+    };
+    // Settings → Models: load/replace a model live (async; pump+repoint in tick).
+    cbs.on_model_load = [this](const ModelBindRequest& r) {
+        Color tint{ r.tint[0], r.tint[1], r.tint[2], 255 };
+        Quaternion base_rot = QuaternionFromEuler(r.pitch * DEG2RAD,
+                                                  r.yaw   * DEG2RAD,
+                                                  r.roll  * DEG2RAD);
+        assets_.request_load(r.file, asset_path(r.file), r.type, r.scale, tint, base_rot);
+    };
+    cbs.on_model_clear = [this](uint16_t type) {
+        assets_.unmap_type(type);
+        repoint_entities_of_type(type);   // back to the procedural shape
+    };
+    cbs.on_models_save = [this](const std::vector<ModelBindRequest>& reqs) {
+        std::vector<ModelSpec> specs;
+        for (const auto& r : reqs) {
+            ModelSpec s;
+            s.type = r.type; s.file = r.file; s.scale = r.scale;
+            s.tint[0] = r.tint[0]; s.tint[1] = r.tint[1]; s.tint[2] = r.tint[2];
+            s.yaw = r.yaw; s.pitch = r.pitch; s.roll = r.roll;
+            specs.push_back(std::move(s));
+        }
+        ConfigManager::save_model_manifest(asset_path("models.yaml"), specs);
     };
     ui_.set_callbacks(std::move(cbs));
 
@@ -263,8 +274,100 @@ void Application::clear_all_entities() {
     live_states_.clear();
     ui_.state().selected_entity = {};
     origin_set_ = false;
+    auto_framed_ = false;   // re-frame the next single track that arrives
     playback_.stop();   // return to live mode
     TraceLog(LOG_INFO, "Cleared all entities and telemetry store");
+}
+
+// ── Replay-file loading (typed path + native dialog share these) ──────────────
+void Application::load_session(const std::string& path) {
+    store_.clear();
+    persist::Recorder::load_into(path, store_);
+    auto [ts, te] = store_.time_range_ns();
+    playback_.seek(ts);
+    playback_.pause();
+    TraceLog(LOG_INFO, "Loaded session %s", path.c_str());
+}
+
+void Application::import_csv(const std::string& path) {
+    // Flexible importer: map the column names commonly emitted by sim/ACMI
+    // exporters. Only columns actually present in the file are used.
+    persist::CsvImporter imp;
+    using F = persist::CsvField;
+    auto m = [&](std::initializer_list<const char*> names, F f) {
+        for (const char* n : names) imp.map(n, f);
+    };
+    m({"time", "timestamp", "t", "sec", "seconds"},   F::TimestampSec);
+    m({"time_ms", "ms"},                               F::TimestampMs);
+    m({"time_ns", "ns"},                               F::TimestampNs);
+    m({"id", "entity_id", "entityid"},                 F::EntityId);
+    m({"type", "entity_type"},                         F::EntityType);
+    m({"source", "source_id"},                         F::SourceId);
+    m({"callsign", "name"},                            F::Callsign);
+    m({"x", "pos_x", "east", "posx"},                  F::PosX);
+    m({"y", "alt", "altitude", "up", "posy"},          F::PosY);
+    m({"z", "pos_z", "north", "posz"},                 F::PosZ);
+    m({"vx", "vel_x"}, F::VelX);  m({"vy", "vel_y"}, F::VelY);  m({"vz", "vel_z"}, F::VelZ);
+    m({"yaw", "heading", "psi"},                       F::YawDeg);
+    m({"pitch", "theta"},                              F::PitchDeg);
+    m({"roll", "phi"},                                 F::RollDeg);
+    m({"health", "hp"},                                F::Health);
+
+    std::vector<net::EntityState> states = imp.import_all(path);
+    if (states.empty()) return;
+
+    std::stable_sort(states.begin(), states.end(),
+        [](const net::EntityState& a, const net::EntityState& b) {
+            return a.timestamp_ns < b.timestamp_ns;
+        });
+
+    store_.clear();
+    std::vector<net::EntityState> frame;
+    uint64_t frame_ts = states.front().timestamp_ns;
+    auto flush = [&] {
+        if (!frame.empty()) store_.ingest(frame_ts, frame);
+        frame.clear();
+    };
+    for (auto& s : states) {
+        if (s.timestamp_ns != frame_ts) { flush(); frame_ts = s.timestamp_ns; }
+        frame.push_back(s);
+    }
+    flush();
+
+    auto [ts, te] = store_.time_range_ns();
+    playback_.seek(ts);
+    playback_.pause();
+    TraceLog(LOG_INFO, "Imported CSV %s", path.c_str());
+}
+
+void Application::browse_and_load() {
+    // Native open dialog (Windows comdlg32 / zenity / osascript). Filter to the
+    // formats we can replay; dispatch by extension.
+    static const char* kFilters[] = { "*.aar", "*.csv" };
+    const char* sel = tinyfd_openFileDialog(
+        "Open replay or CSV log", recordings_dir().c_str(),
+        2, kFilters, "AfterAction session (.aar) / CSV", 0);
+    if (!sel) return;   // cancelled
+    std::string path = sel;
+    snprintf(ui_.state().load_path, sizeof(ui_.state().load_path), "%s", path.c_str());
+    std::string ext = std::filesystem::path(path).extension().string();
+    for (auto& c : ext) c = (char)tolower((unsigned char)c);
+    if (ext == ".csv") import_csv(path);
+    else               load_session(path);
+}
+
+void Application::repoint_entities_of_type(uint16_t type) {
+    const ModelEntry* e = assets_.get_for_type(type);
+    if (!e) return;
+    world_.query<ecs::EntityMeta, ecs::RenderModel>()
+        .each([&](ecs::EntityMeta& meta, ecs::RenderModel& rm) {
+            if (meta.type != type) return;
+            rm.model_ptr = const_cast<Model*>(&e->model);
+            rm.tint      = e->tint;
+            rm.scale     = e->scale;
+            rm.base_rot  = e->base_rot;
+        });
+    TraceLog(LOG_INFO, "Re-pointed live entities of type %u to new model", type);
 }
 
 void Application::apply_network_settings(const std::string& bind_addr, uint16_t port) {
@@ -304,6 +407,11 @@ void Application::tick(float dt) {
         clear_requested_ = false;
         clear_all_entities();
     }
+
+    // Upload any models the worker finished parsing (GL must be on this thread),
+    // and hot-swap them onto entities that already exist for that type.
+    for (uint16_t type : assets_.pump_uploads(2))
+        repoint_entities_of_type(type);
 
     handle_input(dt);
     if (cfg_.demo_mode) process_demo(dt);
@@ -598,11 +706,39 @@ void Application::update_ecs(float dt) {
     }
     world_.progress(dt);
 
+    maybe_auto_frame();
+
     // Camera follow
     world_.query<const ecs::CameraTarget, const ecs::Position>()
         .each([&](const ecs::CameraTarget&, const ecs::Position& p) {
             camera_.target = p.v;
         });
+}
+
+// When the very first entity shows up and it's the ONLY active track, move the
+// free-orbit camera onto it (with a sensible distance) so it's actually visible
+// instead of off-screen at the default demo framing. One-shot; reset on Clear.
+void Application::maybe_auto_frame() {
+    if (auto_framed_) return;
+    auto& st = ui_.state();
+    if (st.camera_mode != 0) return;   // don't fight Focus/Chase modes
+
+    int active = 0;
+    Vector3 p{};
+    world_.query<const ecs::EntityMeta, const ecs::Position>()
+        .each([&](const ecs::EntityMeta& meta, const ecs::Position& pos) {
+            if (meta.active) { ++active; p = pos.v; }
+        });
+
+    if (active == 0) return;           // nothing yet — keep waiting
+    auto_framed_ = true;               // only attempt at the first appearance
+    if (active != 1) return;           // multiple arrived at once — leave default view
+
+    // Centre on the track (render space applies altitude exaggeration to Y) and
+    // pull in to a distance that frames a single entity nicely.
+    camera_free_target_ = { p.x, p.y * st.altitude_exaggerate, p.z };
+    st.camera_distance  = std::clamp(st.entity_3d_scale * 80.0f, 800.0f, 8000.0f);
+    TraceLog(LOG_INFO, "Auto-framed camera on first entity");
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
@@ -723,17 +859,18 @@ void Application::render_3d() {
                 // Bright vertical tie-line from the chevron down to the terrain.
                 DrawLine3D({rp.x, gh, rp.z}, dp, {255, 220, 0, 130});
 
-                // Ground rings on the terrain surface (visible over relief).
-                DrawCircle3D({rp.x, gh + 4.f, rp.z}, 600.f,  {1,0,0}, 90.f, {255,220,0,160});
-                DrawCircle3D({rp.x, gh + 4.f, rp.z}, 1200.f, {1,0,0}, 90.f, {255,220,0,80});
-                DrawCircle3D({rp.x, gh + 4.f, rp.z}, 2400.f, {1,0,0}, 90.f, {255,220,0,35});
+                // Ground rings that FOLLOW the terrain relief (a flat circle was
+                // half-buried on slopes).
+                draw_ground_ring(rp.x, rp.z, 600.f,  {255,220,0,160});
+                draw_ground_ring(rp.x, rp.z, 1200.f, {255,220,0,80});
+                draw_ground_ring(rp.x, rp.z, 2400.f, {255,220,0,35});
             }
 
             // Altitude drop line from the terrain up to the entity position.
             if (rp.y - gh > 10.0f) {
                 DrawLine3D({rp.x, gh, rp.z}, rp, {0, 190, 255, 160});
                 float sr = std::max(50.f, (pos.v.y - gh) * 0.03f);
-                DrawCircle3D({rp.x, gh + 2.f, rp.z}, sr, {1,0,0}, 90.f, {0, 190, 255, 100});
+                draw_ground_ring(rp.x, rp.z, sr, {0, 190, 255, 100});
             }
 
             // Velocity vector (in exaggerated space)
@@ -893,6 +1030,23 @@ float Application::terrain_height_at(float wx, float wz) const {
             + 120.0f * cosf(wx * 0.0004f + 2.0f)  * cosf(wz * 0.0003f)
             +  40.0f * sinf(wx * 0.001f)           * sinf(wz * 0.001f);
     return h * state.terrain_height_scale;
+}
+
+// A horizontal ground ring that hugs the terrain: each vertex is lifted to the
+// terrain height at that point (plus a small offset), so it follows slopes
+// instead of cutting a flat disc half-under the hill.
+void Application::draw_ground_ring(float cx, float cz, float radius, Color col) const {
+    const int   segs = 48;
+    const float lift = std::max(8.0f, radius * 0.01f);   // sit just above terrain
+    Vector3 prev{};
+    for (int i = 0; i <= segs; ++i) {
+        float a = (float)i / segs * 2.0f * PI;
+        float x = cx + cosf(a) * radius;
+        float z = cz + sinf(a) * radius;
+        Vector3 cur{ x, terrain_height_at(x, z) + lift, z };
+        if (i > 0) DrawLine3D(prev, cur, col);
+        prev = cur;
+    }
 }
 
 void Application::draw_terrain() {
