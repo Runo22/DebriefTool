@@ -187,6 +187,27 @@ if(AFTERACTION_TRACY)
     target_link_libraries(afteraction PRIVATE TracyClient)
 endif()
 
+# ── Hangar — standalone model preview tool ─────────────────────────────────────
+# Reuses the app's AssetManager (same FBX/OBJ/glTF import + same draw math) so
+# previews match exactly. Lives in tools/ so it isn't swept into afteraction.
+add_executable(hangar tools/hangar.cpp src/render/AssetManager.cpp)
+target_include_directories(hangar PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${IMGUI_DIR}
+)
+target_link_libraries(hangar PRIVATE raylib assimp imgui rlimgui)
+if(MSVC)
+    target_compile_definitions(hangar PRIVATE NOGDI NOUSER)
+endif()
+if(WIN32)
+    target_link_libraries(hangar PRIVATE ws2_32 winmm)
+endif()
+if(APPLE)
+    target_link_libraries(hangar PRIVATE
+        "-framework Cocoa" "-framework IOKit"
+        "-framework CoreAudio" "-framework AudioToolbox")
+endif()
+
 # ── Post-build: copy assets ────────────────────────────────────────────────────
 add_custom_command(TARGET afteraction POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
