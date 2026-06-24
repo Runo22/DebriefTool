@@ -76,10 +76,28 @@ static Quaternion euler_to_quat(float phi_deg, float theta_deg, float psi_deg)
 Application::Application(AppConfig cfg)
     : cfg_(std::move(cfg)), udp_receiver_(inbound_queue_) {}
 
+// ── Paths anchored to the executable's directory (not the working directory) ──
+std::string Application::app_dir() const {
+    const char* d = GetApplicationDirectory();   // ends with a path separator
+    return d ? std::string(d) : std::string();
+}
+std::string Application::asset_path(const std::string& rel) const {
+    return app_dir() + "assets/" + rel;
+}
+std::string Application::recordings_dir() const {
+    std::string dir = app_dir() + "recordings";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);   // no-op if it already exists
+    return dir + "/";
+}
+std::string Application::config_path() const {
+    return app_dir() + "afteraction_config.yaml";
+}
+
 Application::~Application() {
     if (!cfg_.demo_mode) udp_receiver_.stop();
     recorder_.stop();
-    ConfigManager::save_config(ui_.state(), "afteraction_config.yaml");
+    ConfigManager::save_config(ui_.state(), config_path());
     // Free GL resources (models/meshes) while the GL context is still alive.
     // The AssetManager member destructor runs after this body — i.e. after
     // CloseWindow() has destroyed the context — so unloading there would make GL
@@ -99,8 +117,8 @@ void Application::init_window() {
     // Window / taskbar icon — prefer the rounded, transparent-corner variant;
     // fall back to the square one. GLFW copies the pixels on SetWindowIcon, so
     // the Image can be unloaded immediately. Must be RGBA8 for raylib.
-    Image icon = LoadImage("assets/icon_rounded.png");
-    if (!icon.data) icon = LoadImage("assets/icon.png");
+    Image icon = LoadImage(asset_path("icon_rounded.png").c_str());
+    if (!icon.data) icon = LoadImage(asset_path("icon.png").c_str());
     if (icon.data) {
         ImageFormat(&icon, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
         SetWindowIcon(icon);
@@ -134,14 +152,21 @@ void Application::init_assets() {
     // base-rotation) — no recompile needed. They load ASYNCHRONOUSLY: we only
     // *request* them here so the window opens instantly; the worker thread parses
     // the files and tick() uploads + hot-swaps them in over the next frames.
-    for (const auto& s : ConfigManager::load_model_manifest("assets/models.yaml")) {
+    for (const auto& s : ConfigManager::load_model_manifest(asset_path("models.yaml"))) {
         Color tint{ s.tint[0], s.tint[1], s.tint[2], 255 };
         Quaternion base_rot = QuaternionFromEuler(s.pitch * DEG2RAD,
                                                   s.yaw   * DEG2RAD,
                                                   s.roll  * DEG2RAD);
-        std::filesystem::path p = std::filesystem::path("assets") / s.file;
-        assets_.request_load(s.file, p, s.type, s.scale, tint, base_rot);
+        assets_.request_load(s.file, asset_path(s.file), s.type, s.scale, tint, base_rot);
         TraceLog(LOG_INFO, "Queued model '%s' for type %u", s.file.c_str(), s.type);
+        // Seed the Settings → Models UI with current bindings.
+        UIState::ModelBinding b;
+        b.type = s.type;
+        snprintf(b.file, sizeof(b.file), "%s", s.file.c_str());
+        b.scale = s.scale;
+        b.tint[0] = s.tint[0]/255.0f; b.tint[1] = s.tint[1]/255.0f; b.tint[2] = s.tint[2]/255.0f;
+        b.yaw = s.yaw; b.pitch = s.pitch; b.roll = s.roll;
+        ui_.state().model_bindings.push_back(b);
     }
 }
 
@@ -166,25 +191,29 @@ void Application::init_camera() {
     ui_.state().far_clip_plane  = 2000000.0f;
 
     // Load config
-    ConfigManager::load_config(ui_.state(), "afteraction_config.yaml");
+    ConfigManager::load_config(ui_.state(), config_path());
 }
 
 void Application::init_ui_callbacks() {
     UICallbacks cbs;
     cbs.on_record_start = [this] {
-        char fn[128];
+        char name[64];
         time_t t = time(nullptr);
         tm* lt   = localtime(&t);
-        strftime(fn, sizeof(fn), "session_%Y%m%d_%H%M%S.aar", lt);
-        recorder_.start(fn, fn);
+        strftime(name, sizeof(name), "session_%Y%m%d_%H%M%S.aar", lt);
+        std::string path = recordings_dir() + name;   // <app_dir>/recordings/
+        recorder_.start(path, name);
+        TraceLog(LOG_INFO, "Recording to %s", path.c_str());
     };
     cbs.on_record_stop = [this] { recorder_.stop(); };
     cbs.on_save_dashcam = [this](float secs) {
-        char fn[128];
+        char name[64];
         time_t t = time(nullptr);
         tm* lt   = localtime(&t);
-        strftime(fn, sizeof(fn), "dashcam_%Y%m%d_%H%M%S.aar", lt);
-        persist::Recorder::export_slice(store_, secs, fn, "dashcam");
+        strftime(name, sizeof(name), "dashcam_%Y%m%d_%H%M%S.aar", lt);
+        std::string path = recordings_dir() + name;   // <app_dir>/recordings/
+        persist::Recorder::export_slice(store_, secs, path, "dashcam");
+        TraceLog(LOG_INFO, "Saved dashcam to %s", path.c_str());
     };
     cbs.on_load_file = [this](std::string path) {
         store_.clear();
@@ -250,6 +279,29 @@ void Application::init_ui_callbacks() {
     cbs.on_clear_entities = [this] { clear_requested_ = true; };
     cbs.on_apply_network  = [this](std::string addr, uint16_t port) {
         apply_network_settings(addr, port);
+    };
+    // Settings → Models: load/replace a model live (async; pump+repoint in tick).
+    cbs.on_model_load = [this](const ModelBindRequest& r) {
+        Color tint{ r.tint[0], r.tint[1], r.tint[2], 255 };
+        Quaternion base_rot = QuaternionFromEuler(r.pitch * DEG2RAD,
+                                                  r.yaw   * DEG2RAD,
+                                                  r.roll  * DEG2RAD);
+        assets_.request_load(r.file, asset_path(r.file), r.type, r.scale, tint, base_rot);
+    };
+    cbs.on_model_clear = [this](uint16_t type) {
+        assets_.unmap_type(type);
+        repoint_entities_of_type(type);   // back to the procedural shape
+    };
+    cbs.on_models_save = [this](const std::vector<ModelBindRequest>& reqs) {
+        std::vector<ModelSpec> specs;
+        for (const auto& r : reqs) {
+            ModelSpec s;
+            s.type = r.type; s.file = r.file; s.scale = r.scale;
+            s.tint[0] = r.tint[0]; s.tint[1] = r.tint[1]; s.tint[2] = r.tint[2];
+            s.yaw = r.yaw; s.pitch = r.pitch; s.roll = r.roll;
+            specs.push_back(std::move(s));
+        }
+        ConfigManager::save_model_manifest(asset_path("models.yaml"), specs);
     };
     ui_.set_callbacks(std::move(cbs));
 

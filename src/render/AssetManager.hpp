@@ -82,6 +82,9 @@ public:
     // Override the procedural default for a type with a loaded model name.
     void map_type(uint16_t type_id, const std::string& name);
 
+    // Remove a type's loaded-model override, reverting it to the procedural shape.
+    void unmap_type(uint16_t type_id);
+
     // Returns the best available ModelEntry for a type (loaded → procedural → cube).
     // Pointer is stable for the lifetime of the AssetManager.
     [[nodiscard]] const ModelEntry* get_for_type(uint16_t type_id) const noexcept;

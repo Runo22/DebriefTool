@@ -4,9 +4,11 @@
 #include "../network/UdpReceiver.hpp"
 #include "../persistence/Recorder.hpp"
 #include <flecs.h>
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace afteraction {
 
@@ -17,6 +19,15 @@ namespace afteraction {
 //  All draw calls must happen between rlImGuiBegin() / rlImGuiEnd().
 // ─────────────────────────────────────────────────────────────────────────────
 
+// A request to bind a model to an entity type (from the Settings → Models tab).
+struct ModelBindRequest {
+    uint16_t    type  = 1;
+    std::string file;                     // relative to assets/ (e.g. "models/f16.glb")
+    float       scale = 1.0f;
+    uint8_t     tint[3] = {255,255,255};
+    float       yaw = 0, pitch = 0, roll = 0;  // base-rotation, degrees
+};
+
 struct UICallbacks {
     std::function<void()>               on_record_start;
     std::function<void()>               on_record_stop;
@@ -26,6 +37,9 @@ struct UICallbacks {
     std::function<void(uint16_t, std::string)> on_load_model;
     std::function<void()>               on_clear_entities;     // wipe all tracks
     std::function<void(std::string, uint16_t)> on_apply_network; // bind addr, port
+    std::function<void(const ModelBindRequest&)> on_model_load;  // load/replace model for a type
+    std::function<void(uint16_t)>                on_model_clear; // revert type to procedural
+    std::function<void(const std::vector<ModelBindRequest>&)> on_models_save; // persist manifest
 };
 
 struct UIState {
@@ -85,6 +99,18 @@ struct UIState {
     // Terrain settings
     int   terrain_mode = 3; // 0=None, 1=Wireframe, 2=Solid, 3=Both
     float terrain_height_scale = 1.0f;
+
+    // ── Settings → Models tab: editable type → model bindings ─────────────────
+    // Seeded from assets/models.yaml at startup; edited live; saved back to it.
+    struct ModelBinding {
+        int   type = 1;                 // EntityTypeId
+        char  file[256] = "";           // relative to assets/ (e.g. "models/f16.glb")
+        float scale = 1.0f;
+        float tint[3] = {1, 1, 1};
+        float yaw = 0, pitch = 0, roll = 0;  // base-rotation, degrees
+        char  status[48] = "";          // last action feedback
+    };
+    std::vector<ModelBinding> model_bindings;
 };
 
 class AfterActionUI {

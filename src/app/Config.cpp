@@ -122,4 +122,34 @@ std::vector<ModelSpec> ConfigManager::load_model_manifest(const std::string& pat
     return out;
 }
 
+bool ConfigManager::save_model_manifest(const std::string& path,
+                                        const std::vector<ModelSpec>& models) {
+    try {
+        YAML::Node root;
+        for (const auto& s : models) {
+            YAML::Node n;
+            n["type"]  = (int)s.type;
+            n["file"]  = s.file;
+            n["scale"] = s.scale;
+            YAML::Node tint(YAML::NodeType::Sequence);
+            tint.push_back((int)s.tint[0]); tint.push_back((int)s.tint[1]); tint.push_back((int)s.tint[2]);
+            tint.SetStyle(YAML::EmitterStyle::Flow);
+            n["tint"] = tint;
+            YAML::Node br(YAML::NodeType::Sequence);
+            br.push_back(s.yaw); br.push_back(s.pitch); br.push_back(s.roll);
+            br.SetStyle(YAML::EmitterStyle::Flow);
+            n["base_rot"] = br;
+            root["models"].push_back(n);
+        }
+        std::ofstream fout(path);
+        if (!fout) return false;
+        fout << "# AfterAction — model manifest (written by Settings -> Models)\n";
+        fout << root;
+        return true;
+    } catch (const YAML::Exception& e) {
+        std::cerr << "Model manifest save failed: " << e.what() << "\n";
+        return false;
+    }
+}
+
 } // namespace afteraction

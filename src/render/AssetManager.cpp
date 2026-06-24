@@ -383,6 +383,10 @@ void AssetManager::map_type(uint16_t type_id, const std::string& name) {
     type_to_name_[type_id] = name;
 }
 
+void AssetManager::unmap_type(uint16_t type_id) {
+    type_to_name_.erase(type_id);
+}
+
 const ModelEntry* AssetManager::get_for_type(uint16_t type_id) const noexcept {
     // 1. Loaded model override?
     if (auto it = type_to_name_.find(type_id); it != type_to_name_.end()) {

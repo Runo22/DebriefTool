@@ -4,9 +4,13 @@ Goal: bind 3D models to entity types **without recompiling** — via a config fi
 and/or the Settings UI — and load them **at startup and at runtime** while keeping
 the window opening **instantly** (no multi-second stall).
 
-> **Status:** Phase 0 + Phase 2 (config-driven async loading) and the Hangar
-> preview tool (Phase 4) are **done**. Phase 1 (in-app Settings → Models tab) and
-> Phase 3 (polish) are the remaining work.
+> **Status:** Phases 0, 1, 2, 4 are **done** — config-driven async loading, the
+> in-app **Settings → Models** tab (add/load/revert/remove + Save manifest), and
+> the **Hangar** preview tool. Phase 3 (polish: textures, hot-reload) remains.
+>
+> All app files now live next to the **executable**, not the working directory:
+> `assets/` (bundled), `recordings/` (sessions + dashcams), and
+> `afteraction_config.yaml`.
 
 ---
 
@@ -61,7 +65,7 @@ Add a model manifest so type→model bindings live in a file, not in code.
 
 ---
 
-## Phase 1 — Settings UI for mappings  ·  medium effort
+## Phase 1 — Settings UI for mappings  ·  ✅ done
 
 A **Settings → Models** tab so users bind models live, no file editing.
 
@@ -151,8 +155,8 @@ spawned entities already pick the model up via `get_for_type()`.
 1. ✅ **Phase 0** — manifest + extended `load()` (no recompile).
 2. ✅ **Phase 2** — async parse/upload split (instant startup).
 3. ✅ **Phase 4** — Hangar preview tool (shared pipeline).
-4. ⬜ **Phase 1** — in-app Settings → Models tab (add/replace live, persist).
-5. ⬜ **Phase 3** — polish as needed.
+4. ✅ **Phase 1** — in-app Settings → Models tab (add/load/revert/remove + Save).
+5. ⬜ **Phase 3** — polish (textures/materials, hot-reload) as needed.
 
 > Fast-open guarantee (met): Assimp work never runs before the first frame —
 > `init_assets()` only *requests* loads; the worker thread parses; `tick()`

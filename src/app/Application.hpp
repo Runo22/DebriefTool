@@ -84,6 +84,16 @@ private:
         return (static_cast<uint64_t>(src) << 32) | eid;
     }
 
+    // ── Filesystem layout (everything relative to the EXECUTABLE, not the cwd) ──
+    // Directory containing the running executable (with trailing separator).
+    std::string app_dir() const;
+    // <app_dir>/assets/<rel>  — bundled assets are copied next to the exe.
+    std::string asset_path(const std::string& rel) const;
+    // <app_dir>/recordings/ , created on demand. Sessions/dashcams are saved here.
+    std::string recordings_dir() const;
+    // <app_dir>/afteraction_config.yaml
+    std::string config_path() const;
+
     // ── Subsystems ────────────────────────────────────────────────────────────
     AppConfig cfg_;
 

@@ -819,6 +819,92 @@ void AfterActionUI::draw_settings_window() {
                 ImGui::EndTabItem();
             }
 
+            // ── Models ────────────────────────────────────────────────────────
+            if (ImGui::BeginTabItem("Models")) {
+                ImGui::TextWrapped("Bind 3D models (FBX / OBJ / glTF) to entity types. "
+                    "Put files in the app's assets/models/ folder. Load applies live; "
+                    "Save writes assets/models.yaml so it persists across launches.");
+                ImGui::TextDisabled("Tip: preview & tune scale/rotation with the 'hangar' tool.");
+                ImGui::Separator();
+
+                const char* kTypeNames[] = { "Unknown", "Jet", "Missile", "AAA",
+                                             "Ground", "Helo", "Ship" };
+                int remove_idx = -1;
+                for (int i = 0; i < (int)state_.model_bindings.size(); ++i) {
+                    auto& b = state_.model_bindings[i];
+                    ImGui::PushID(i);
+                    int tclamp = (b.type >= 0 && b.type < 7) ? b.type : 0;
+                    char hdr[96];
+                    snprintf(hdr, sizeof(hdr), "Type %d (%s)  %s###mb%d",
+                             b.type, kTypeNames[tclamp],
+                             b.file[0] ? b.file : "<no file>", i);
+                    if (ImGui::CollapsingHeader(hdr, ImGuiTreeNodeFlags_DefaultOpen)) {
+                        ImGui::SetNextItemWidth(-1.0f);
+                        ImGui::Combo("##type", &b.type, kTypeNames, IM_ARRAYSIZE(kTypeNames));
+                        ImGui::SetNextItemWidth(-1.0f);
+                        ImGui::InputTextWithHint("##file", "models/yourmodel.glb",
+                                                 b.file, sizeof(b.file));
+                        ImGui::SliderFloat("Scale", &b.scale, 0.001f, 50.0f, "%.3f",
+                                           ImGuiSliderFlags_Logarithmic);
+                        ImGui::ColorEdit3("Tint", b.tint);
+                        ImGui::SliderFloat("Yaw",   &b.yaw,   -180, 180, "%.0f");
+                        ImGui::SliderFloat("Pitch", &b.pitch, -180, 180, "%.0f");
+                        ImGui::SliderFloat("Roll",  &b.roll,  -180, 180, "%.0f");
+
+                        bool can_load = b.file[0] != '\0';
+                        ImGui::BeginDisabled(!can_load);
+                        if (ImGui::Button("Load / Apply") && cbs_.on_model_load) {
+                            ModelBindRequest r;
+                            r.type  = (uint16_t)b.type;
+                            r.file  = b.file;
+                            r.scale = b.scale;
+                            r.tint[0] = (uint8_t)(b.tint[0]*255);
+                            r.tint[1] = (uint8_t)(b.tint[1]*255);
+                            r.tint[2] = (uint8_t)(b.tint[2]*255);
+                            r.yaw = b.yaw; r.pitch = b.pitch; r.roll = b.roll;
+                            cbs_.on_model_load(r);
+                            snprintf(b.status, sizeof(b.status), "loading...");
+                        }
+                        ImGui::EndDisabled();
+                        ImGui::SameLine();
+                        if (ImGui::Button("Revert to procedural") && cbs_.on_model_clear) {
+                            cbs_.on_model_clear((uint16_t)b.type);
+                            snprintf(b.status, sizeof(b.status), "reverted");
+                        }
+                        ImGui::SameLine();
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.55f,0.18f,0.20f,0.9f));
+                        if (ImGui::Button("Remove")) remove_idx = i;
+                        ImGui::PopStyleColor();
+                        if (b.status[0]) { ImGui::SameLine(); ImGui::TextDisabled("%s", b.status); }
+                    }
+                    ImGui::PopID();
+                }
+                if (remove_idx >= 0) {
+                    uint16_t t = (uint16_t)state_.model_bindings[remove_idx].type;
+                    if (cbs_.on_model_clear) cbs_.on_model_clear(t);
+                    state_.model_bindings.erase(state_.model_bindings.begin() + remove_idx);
+                }
+
+                ImGui::Separator();
+                if (ImGui::Button("+ Add binding"))
+                    state_.model_bindings.push_back(UIState::ModelBinding{});
+                ImGui::SameLine();
+                if (ImGui::Button("Save manifest") && cbs_.on_models_save) {
+                    std::vector<ModelBindRequest> reqs;
+                    for (auto& b : state_.model_bindings) {
+                        if (b.file[0] == '\0') continue;
+                        ModelBindRequest r;
+                        r.type = (uint16_t)b.type; r.file = b.file; r.scale = b.scale;
+                        r.tint[0]=(uint8_t)(b.tint[0]*255); r.tint[1]=(uint8_t)(b.tint[1]*255);
+                        r.tint[2]=(uint8_t)(b.tint[2]*255);
+                        r.yaw=b.yaw; r.pitch=b.pitch; r.roll=b.roll;
+                        reqs.push_back(std::move(r));
+                    }
+                    cbs_.on_models_save(reqs);
+                }
+                ImGui::EndTabItem();
+            }
+
             ImGui::EndTabBar();
         }
 

@@ -23,6 +23,10 @@ public:
 
     // Parse the model manifest. Returns empty if the file is missing/invalid.
     static std::vector<ModelSpec> load_model_manifest(const std::string& path = "assets/models.yaml");
+
+    // Write the model manifest (Settings → Models "Save"). Returns false on error.
+    static bool save_model_manifest(const std::string& path,
+                                    const std::vector<ModelSpec>& models);
 };
 
 } // namespace afteraction
