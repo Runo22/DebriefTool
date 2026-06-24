@@ -4,6 +4,10 @@ Goal: bind 3D models to entity types **without recompiling** — via a config fi
 and/or the Settings UI — and load them **at startup and at runtime** while keeping
 the window opening **instantly** (no multi-second stall).
 
+> **Status:** Phase 0 + Phase 2 (config-driven async loading) and the Hangar
+> preview tool (Phase 4) are **done**. Phase 1 (in-app Settings → Models tab) and
+> Phase 3 (polish) are the remaining work.
+
 ---
 
 ## Where we are today
@@ -31,7 +35,7 @@ file models *without* reintroducing a startup stall.
 
 ---
 
-## Phase 0 — Config-driven mappings (no recompile)  ·  small effort
+## Phase 0 — Config-driven mappings (no recompile)  ·  ✅ done
 
 Add a model manifest so type→model bindings live in a file, not in code.
 
@@ -73,7 +77,7 @@ A **Settings → Models** tab so users bind models live, no file editing.
 
 ---
 
-## Phase 2 — Async load = guaranteed fast startup  ·  larger effort
+## Phase 2 — Async load = guaranteed fast startup  ·  ✅ done
 
 Split the heavy work so the window opens immediately and models stream in.
 
@@ -94,40 +98,62 @@ Split the heavy work so the window opens immediately and models stream in.
 
 ---
 
-## Phase 3 — Polish  ·  optional
+## Phase 4 — Hangar: model preview tool  ·  ✅ done
+
+A standalone `hangar` executable to see exactly how a model will look in
+AfterAction **before** binding it — and to dial in scale / facing.
+
+- `tools/hangar.cpp`, CMake target `hangar`. Usage: `hangar <model> [scale]`.
+- **Shares the exact FBX pipeline**: imports through the same
+  `AssetManager::load()` (→ `parse_file` + `upload_cpu`) and draws with the same
+  `DrawModelEx` + `QuaternionMultiply(entityRot, base_rot)` math and the same
+  `QuaternionFromEuler(pitch, yaw, roll)` base-rotation conversion the manifest
+  uses. So preview == in-app (mesh + orientation + tint).
+- Orbit camera, ground grid, forward(-Z)/up(+Y)/right(+X) axis guides, wireframe
+  toggle, auto-spin (stands in for the sim heading), bounding-box readout, and a
+  live `yaml` snippet to paste into `assets/models.yaml`.
+- Lives in `tools/` so it isn't swept into the `afteraction` glob (avoids a
+  second `main()`); it compiles `src/render/AssetManager.cpp` into its own target.
+
+**FBX-pipeline parity (double-checked):** both binaries import via Assimp through
+`AssetManager` and render identically. The only intentional difference is *when*
+the GPU upload happens — AfterAction defers it to the per-frame `pump_uploads`
+(async), Hangar uploads inline (sync) — which doesn't affect how the model looks.
+Verified by importing assimp's `jeep1.fbx` in both: AfterAction streams it in
+(no startup stall, then hot-swaps); Hangar renders it with the snippet/axes.
+
+> Polish idea: a "Browse…" file picker and reading default scale/base_rot from
+> an existing manifest entry.
+
+---
+
+## Phase 3 — Polish  ·  optional (remaining)
 
 - **Hot-reload** on file mtime change (auto re-import while iterating on a model).
-- **Base-rotation tuner**: live yaw/pitch/roll sliders to fix model facing, saved
-  to the manifest.
+- **Base-rotation tuner inside AfterAction** (Hangar already does this for preview).
 - Material/texture import (currently mesh-only, flat tint).
 - Model cache / dedupe; validation + friendly errors; per-source overrides.
 
 ---
 
-## Hot-swap design (shared by Phases 1–2)
+## Hot-swap design — chosen: **B (repoint-on-ready)**
 
 `RenderModel.model_ptr` is cached at spawn, so newly-loaded models don't reach
-existing entities. Two clean options:
-
-- **A. Resolve-per-frame (simplest):** drop the cached pointer; store `type_id`
-  in `RenderModel` and call `get_for_type(meta.type)` in the render loop. A few
-  `unordered_map` lookups/frame — negligible, and always current. *Recommended.*
-- **B. Repoint-on-ready:** keep the cache; when a model finishes loading, query
-  the ECS for entities of that type and update their `RenderModel` (tint/scale/
-  base_rot/model_ptr). More code, marginally faster draw.
-
-Either makes runtime/async loading correct; A is the least error-prone.
+existing entities. Implemented option **B**: when `pump_uploads()` reports a type
+became available, `Application::repoint_entities_of_type()` queries the ECS and
+updates those entities' `RenderModel` (model_ptr/tint/scale/base_rot). Newly
+spawned entities already pick the model up via `get_for_type()`.
 
 ---
 
-## Suggested order
+## Suggested order / status
 
-1. **Phase 0** (manifest + extended `load()`): unblocks "no recompile" today.
-2. **Phase 2 split** (async): the real fix for fast startup — do before shipping
-   any large models.
-3. **Phase 1** (Settings UI on top of the async queue + hot-swap).
-4. **Phase 3** as needed.
+1. ✅ **Phase 0** — manifest + extended `load()` (no recompile).
+2. ✅ **Phase 2** — async parse/upload split (instant startup).
+3. ✅ **Phase 4** — Hangar preview tool (shared pipeline).
+4. ⬜ **Phase 1** — in-app Settings → Models tab (add/replace live, persist).
+5. ⬜ **Phase 3** — polish as needed.
 
-> Fast-open guarantee: at no phase does Assimp work run before the first frame.
-> Phase 0 defers manifest loads to the async queue (Phase 2); until that lands,
-> keep manifest models small or load them a few frames after the window appears.
+> Fast-open guarantee (met): Assimp work never runs before the first frame —
+> `init_assets()` only *requests* loads; the worker thread parses; `tick()`
+> uploads a small budget per frame.
