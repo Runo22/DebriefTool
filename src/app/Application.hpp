@@ -69,6 +69,10 @@ private:
     // Restarts the UDP receiver on a new bind address / port (from the UI).
     void apply_network_settings(const std::string& bind_addr, uint16_t port);
 
+    // After a model finishes async-loading, point existing entities of that type
+    // at the new model (newly spawned entities pick it up via get_for_type).
+    void repoint_entities_of_type(uint16_t type);
+
     // Lazy-set scene origin from first received position; converts subsequent
     // lat/lon/alt to ENU metres and fills state.position[].
     // For demo states (position already ENU), pass enu_already=true.

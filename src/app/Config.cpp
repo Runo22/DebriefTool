@@ -95,4 +95,31 @@ void ConfigManager::save_config(const UIState& state, const std::string& path) {
     }
 }
 
+std::vector<ModelSpec> ConfigManager::load_model_manifest(const std::string& path) {
+    std::vector<ModelSpec> out;
+    try {
+        YAML::Node root = YAML::LoadFile(path);
+        const YAML::Node& models = root["models"];
+        if (!models || !models.IsSequence()) return out;
+        for (const auto& n : models) {
+            ModelSpec s;
+            if (n["type"])  s.type  = static_cast<uint16_t>(n["type"].as<int>());
+            if (n["file"])  s.file  = n["file"].as<std::string>();
+            if (n["scale"]) s.scale = n["scale"].as<float>();
+            if (n["tint"] && n["tint"].IsSequence() && n["tint"].size() == 3)
+                for (int i = 0; i < 3; ++i)
+                    s.tint[i] = static_cast<uint8_t>(n["tint"][i].as<int>());
+            if (n["base_rot"] && n["base_rot"].IsSequence() && n["base_rot"].size() == 3) {
+                s.yaw   = n["base_rot"][0].as<float>();
+                s.pitch = n["base_rot"][1].as<float>();
+                s.roll  = n["base_rot"][2].as<float>();
+            }
+            if (!s.file.empty()) out.push_back(std::move(s));
+        }
+    } catch (const YAML::Exception&) {
+        // Missing/invalid manifest is fine — procedural shapes are used.
+    }
+    return out;
+}
+
 } // namespace afteraction

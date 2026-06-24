@@ -284,7 +284,7 @@ void AssetManager::init_procedural() {
 
 AssetManager::AssetManager()  {}
 
-AssetManager::~AssetManager() { unload_all(); }
+AssetManager::~AssetManager() { stop_worker(); unload_all(); }
 
 void AssetManager::unload_all() noexcept {
     for (auto& [k, e] : named_)      UnloadModel(e.model);
@@ -297,14 +297,86 @@ void AssetManager::unload_all() noexcept {
 
 bool AssetManager::load(const std::string& name,
                          const std::filesystem::path& path,
-                         float import_scale) noexcept
+                         float import_scale,
+                         Color tint,
+                         Quaternion base_rot) noexcept
 {
     if (named_.contains(name)) return true;
     ModelEntry e;
     e.scale = import_scale;
-    if (!convert_assimp(path, import_scale, e)) return false;
+    if (!convert_assimp(path, import_scale, tint, base_rot, e)) return false;
     named_.emplace(name, std::move(e));
     return true;
+}
+
+// ── Async loading ─────────────────────────────────────────────────────────────
+void AssetManager::stop_worker() noexcept {
+    worker_run_.store(false);
+    jobs_cv_.notify_all();
+    if (worker_.joinable()) worker_.join();
+}
+
+void AssetManager::request_load(const std::string& name,
+                                const std::filesystem::path& path,
+                                uint16_t type, float import_scale,
+                                Color tint, Quaternion base_rot) noexcept
+{
+    if (named_.contains(name)) { map_type(type, name); return; }
+    if (!worker_run_.exchange(true))
+        worker_ = std::thread(&AssetManager::worker_loop, this);
+    {
+        std::lock_guard lk(jobs_mu_);
+        jobs_.push_back({name, path, type, import_scale, tint, base_rot});
+    }
+    inflight_.fetch_add(1);
+    jobs_cv_.notify_one();
+}
+
+void AssetManager::worker_loop() {
+    while (worker_run_.load()) {
+        LoadJob job;
+        {
+            std::unique_lock lk(jobs_mu_);
+            jobs_cv_.wait(lk, [&]{ return !jobs_.empty() || !worker_run_.load(); });
+            if (!worker_run_.load()) break;
+            job = std::move(jobs_.front());
+            jobs_.pop_front();
+        }
+        ReadyModel rm; rm.job = job;
+        rm.ok = parse_file(job.path, rm.cpu);   // NO GL here — worker-safe
+        {
+            std::lock_guard lk(ready_mu_);
+            ready_models_.push_back(std::move(rm));
+        }
+    }
+}
+
+std::vector<uint16_t> AssetManager::pump_uploads(int budget) noexcept {
+    std::vector<uint16_t> updated;
+    for (int i = 0; i < budget; ++i) {
+        ReadyModel rm;
+        {
+            std::lock_guard lk(ready_mu_);
+            if (ready_models_.empty()) break;
+            rm = std::move(ready_models_.back());
+            ready_models_.pop_back();
+        }
+        inflight_.fetch_sub(1);
+        if (!rm.ok) {
+            TraceLog(LOG_WARNING, "AssetManager: failed to parse '%s'",
+                     rm.job.path.string().c_str());
+            continue;
+        }
+        ModelEntry e;
+        if (upload_cpu(rm.cpu, rm.job.scale, rm.job.tint, rm.job.base_rot, e)) {
+            named_[rm.job.name] = std::move(e);   // GPU upload on the main thread
+            map_type(rm.job.type, rm.job.name);
+            updated.push_back(rm.job.type);
+            TraceLog(LOG_INFO, "AssetManager: model ready for type %u ('%s')",
+                     rm.job.type, rm.job.name.c_str());
+        }
+    }
+    return updated;
 }
 
 void AssetManager::map_type(uint16_t type_id, const std::string& name) {
@@ -325,11 +397,11 @@ const ModelEntry* AssetManager::get_for_type(uint16_t type_id) const noexcept {
 }
 
 // ── Assimp → Raylib conversion ────────────────────────────────────────────────
-bool AssetManager::convert_assimp(const std::filesystem::path& path,
-                                   float import_scale, ModelEntry& out) noexcept
+// Assimp parse + CPU vertex assembly. NO raylib/GL calls — safe on any thread.
+bool AssetManager::parse_file(const std::filesystem::path& path, CpuMesh& out) noexcept
 {
     Assimp::Importer importer;
-    importer.SetPropertyFloat(AI_CONFIG_GLOBAL_SCALE_FACTOR_KEY, import_scale);
+    importer.SetPropertyFloat(AI_CONFIG_GLOBAL_SCALE_FACTOR_KEY, 1.0f);
 
     const aiScene* scene = importer.ReadFile(path.string(),
         aiProcess_Triangulate | aiProcess_GenSmoothNormals |
@@ -342,59 +414,72 @@ bool AssetManager::convert_assimp(const std::filesystem::path& path,
         return false;
     }
 
-    std::vector<float>          vertices, normals, texcoords;
-    std::vector<unsigned short> indices;
     unsigned short vert_offset = 0;
-
     for (uint32_t mi = 0; mi < scene->mNumMeshes; ++mi) {
         const aiMesh* m = scene->mMeshes[mi];
         if (!m->HasPositions()) continue;
 
         for (uint32_t vi = 0; vi < m->mNumVertices; ++vi) {
-            vertices.push_back(m->mVertices[vi].x);
-            vertices.push_back(m->mVertices[vi].y);
-            vertices.push_back(m->mVertices[vi].z);
+            out.vertices.push_back(m->mVertices[vi].x);
+            out.vertices.push_back(m->mVertices[vi].y);
+            out.vertices.push_back(m->mVertices[vi].z);
             if (m->HasNormals()) {
-                normals.push_back(m->mNormals[vi].x);
-                normals.push_back(m->mNormals[vi].y);
-                normals.push_back(m->mNormals[vi].z);
-            } else { normals.push_back(0); normals.push_back(1); normals.push_back(0); }
+                out.normals.push_back(m->mNormals[vi].x);
+                out.normals.push_back(m->mNormals[vi].y);
+                out.normals.push_back(m->mNormals[vi].z);
+            } else { out.normals.push_back(0); out.normals.push_back(1); out.normals.push_back(0); }
             if (m->HasTextureCoords(0)) {
-                texcoords.push_back(m->mTextureCoords[0][vi].x);
-                texcoords.push_back(m->mTextureCoords[0][vi].y);
-            } else { texcoords.push_back(0); texcoords.push_back(0); }
+                out.texcoords.push_back(m->mTextureCoords[0][vi].x);
+                out.texcoords.push_back(m->mTextureCoords[0][vi].y);
+            } else { out.texcoords.push_back(0); out.texcoords.push_back(0); }
         }
         for (uint32_t fi = 0; fi < m->mNumFaces; ++fi) {
             const aiFace& f = m->mFaces[fi];
             if (f.mNumIndices != 3) continue;
-            indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[0]));
-            indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[1]));
-            indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[2]));
+            out.indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[0]));
+            out.indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[1]));
+            out.indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[2]));
         }
         vert_offset += static_cast<unsigned short>(m->mNumVertices);
     }
+    return !out.vertices.empty();
+}
 
-    if (vertices.empty()) return false;
-
+// GPU upload of a parsed CpuMesh — MAIN THREAD ONLY (raylib GL calls).
+bool AssetManager::upload_cpu(const CpuMesh& cpu, float scale, Color tint,
+                              Quaternion base_rot, ModelEntry& out) noexcept
+{
+    if (cpu.vertices.empty()) return false;
     Mesh mesh{};
-    mesh.vertexCount   = static_cast<int>(vertices.size() / 3);
-    mesh.triangleCount = static_cast<int>(indices.size()  / 3);
-    mesh.vertices  = (float*)MemAlloc((unsigned)(vertices.size()  * sizeof(float)));
-    mesh.normals   = (float*)MemAlloc((unsigned)(normals.size()   * sizeof(float)));
-    mesh.texcoords = (float*)MemAlloc((unsigned)(texcoords.size() * sizeof(float)));
-    mesh.indices   = (unsigned short*)MemAlloc((unsigned)(indices.size() * sizeof(unsigned short)));
-    std::memcpy(mesh.vertices,  vertices.data(),  vertices.size()  * sizeof(float));
-    std::memcpy(mesh.normals,   normals.data(),   normals.size()   * sizeof(float));
-    std::memcpy(mesh.texcoords, texcoords.data(), texcoords.size() * sizeof(float));
-    std::memcpy(mesh.indices,   indices.data(),   indices.size()   * sizeof(unsigned short));
+    mesh.vertexCount   = static_cast<int>(cpu.vertices.size() / 3);
+    mesh.triangleCount = static_cast<int>(cpu.indices.size()  / 3);
+    mesh.vertices  = (float*)MemAlloc((unsigned)(cpu.vertices.size()  * sizeof(float)));
+    mesh.normals   = (float*)MemAlloc((unsigned)(cpu.normals.size()   * sizeof(float)));
+    mesh.texcoords = (float*)MemAlloc((unsigned)(cpu.texcoords.size() * sizeof(float)));
+    mesh.indices   = (unsigned short*)MemAlloc((unsigned)(cpu.indices.size() * sizeof(unsigned short)));
+    std::memcpy(mesh.vertices,  cpu.vertices.data(),  cpu.vertices.size()  * sizeof(float));
+    std::memcpy(mesh.normals,   cpu.normals.data(),   cpu.normals.size()   * sizeof(float));
+    std::memcpy(mesh.texcoords, cpu.texcoords.data(), cpu.texcoords.size() * sizeof(float));
+    std::memcpy(mesh.indices,   cpu.indices.data(),   cpu.indices.size()   * sizeof(unsigned short));
     UploadMesh(&mesh, false);
 
     out.model    = LoadModelFromMesh(mesh);
-    out.tint     = WHITE;
-    out.base_rot = {0,0,0,1};
+    out.tint     = tint;
+    out.scale    = scale;
+    out.base_rot = base_rot;
+    return true;
+}
 
+// Synchronous import = parse + upload on the calling (main) thread.
+bool AssetManager::convert_assimp(const std::filesystem::path& path,
+                                   float import_scale, Color tint,
+                                   Quaternion base_rot, ModelEntry& out) noexcept
+{
+    CpuMesh cpu;
+    if (!parse_file(path, cpu)) return false;
+    if (!upload_cpu(cpu, import_scale, tint, base_rot, out)) return false;
     TraceLog(LOG_INFO, "AssetManager: loaded '%s' (%d verts)",
-             path.filename().string().c_str(), mesh.vertexCount);
+             path.filename().string().c_str(), out.model.meshCount ? out.model.meshes[0].vertexCount : 0);
     return true;
 }
 

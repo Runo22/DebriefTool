@@ -1,0 +1,13 @@
+# AfterAction — model manifest
+# Bind entity types to 3D model files (FBX / OBJ / glTF/GLB). Files load
+# ASYNCHRONOUSLY at startup, so the window opens instantly and models stream in.
+#
+# Drop files in assets/models/ and uncomment/edit. Tune scale & base_rot live in
+# the Hangar preview tool (build target: hangar) before committing values here.
+#
+# models:
+#   - type: 1              # 1=jet 2=missile 3=aaa 4=ground 5=helo 6=ship
+#     file: models/f16.glb
+#     scale: 1.0           # render size multiplier (~unit-sized model -> 1.0)
+#     tint: [255, 255, 255]
+#     base_rot: [0, 0, 0]  # yaw, pitch, roll degrees — fix the model's facing

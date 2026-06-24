@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <initializer_list>
 #include <vector>
+#include <filesystem>
 #include "Config.hpp"
 #include "../persistence/CsvImporter.hpp"
 
@@ -129,9 +130,19 @@ void Application::init_assets() {
     // Create detailed procedural composite models now that InitWindow() has initialized the GPU context
     assets_.init_procedural();
 
-    // To load custom models:
-    //   assets_.load("my_jet", "assets/models/jet.glb", 0.01f);
-    //   assets_.map_type(net::TYPE_JET, "my_jet");
+    // Custom models are configured in assets/models.yaml (type → file/scale/tint/
+    // base-rotation) — no recompile needed. They load ASYNCHRONOUSLY: we only
+    // *request* them here so the window opens instantly; the worker thread parses
+    // the files and tick() uploads + hot-swaps them in over the next frames.
+    for (const auto& s : ConfigManager::load_model_manifest("assets/models.yaml")) {
+        Color tint{ s.tint[0], s.tint[1], s.tint[2], 255 };
+        Quaternion base_rot = QuaternionFromEuler(s.pitch * DEG2RAD,
+                                                  s.yaw   * DEG2RAD,
+                                                  s.roll  * DEG2RAD);
+        std::filesystem::path p = std::filesystem::path("assets") / s.file;
+        assets_.request_load(s.file, p, s.type, s.scale, tint, base_rot);
+        TraceLog(LOG_INFO, "Queued model '%s' for type %u", s.file.c_str(), s.type);
+    }
 }
 
 void Application::init_camera() {
@@ -267,6 +278,20 @@ void Application::clear_all_entities() {
     TraceLog(LOG_INFO, "Cleared all entities and telemetry store");
 }
 
+void Application::repoint_entities_of_type(uint16_t type) {
+    const ModelEntry* e = assets_.get_for_type(type);
+    if (!e) return;
+    world_.query<ecs::EntityMeta, ecs::RenderModel>()
+        .each([&](ecs::EntityMeta& meta, ecs::RenderModel& rm) {
+            if (meta.type != type) return;
+            rm.model_ptr = const_cast<Model*>(&e->model);
+            rm.tint      = e->tint;
+            rm.scale     = e->scale;
+            rm.base_rot  = e->base_rot;
+        });
+    TraceLog(LOG_INFO, "Re-pointed live entities of type %u to new model", type);
+}
+
 void Application::apply_network_settings(const std::string& bind_addr, uint16_t port) {
     if (cfg_.demo_mode) return;   // demo has no live socket
     udp_receiver_.stop();
@@ -304,6 +329,11 @@ void Application::tick(float dt) {
         clear_requested_ = false;
         clear_all_entities();
     }
+
+    // Upload any models the worker finished parsing (GL must be on this thread),
+    // and hot-swap them onto entities that already exist for that type.
+    for (uint16_t type : assets_.pump_uploads(2))
+        repoint_entities_of_type(type);
 
     handle_input(dt);
     if (cfg_.demo_mode) process_demo(dt);
