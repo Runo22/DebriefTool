@@ -73,6 +73,11 @@ private:
     // at the new model (newly spawned entities pick it up via get_for_type).
     void repoint_entities_of_type(uint16_t type);
 
+    // Replay-file loaders (shared by the typed path, and the native file dialog).
+    void load_session(const std::string& path);   // .aar recording
+    void import_csv(const std::string& path);      // flexible CSV log
+    void browse_and_load();                        // native open dialog → dispatch
+
     // Lazy-set scene origin from first received position; converts subsequent
     // lat/lon/alt to ENU metres and fills state.position[].
     // For demo states (position already ENU), pass enu_already=true.

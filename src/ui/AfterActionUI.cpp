@@ -221,7 +221,9 @@ void AfterActionUI::draw_toolbar(PlaybackController& pb,
 
     // ── Open / Settings buttons ────────────────────────────────────────────────
     if (ImGui::Button(ICON_FA_FOLDER_OPEN " Open")) {
-        state_.show_settings_window = true;   // load controls live in the Settings panel
+        // Straight to the native file dialog (fallback: open the Settings panel).
+        if (cbs_.on_browse_file) cbs_.on_browse_file();
+        else state_.show_settings_window = true;
     }
     ImGui::SameLine();
     if (ImGui::Button(ICON_FA_GEAR " Settings")) {
@@ -756,8 +758,15 @@ void AfterActionUI::draw_settings_window() {
             // ── Session Files ─────────────────────────────────────────────────
             if (ImGui::BeginTabItem("Files")) {
                 ImGui::TextDisabled("Open a recorded .aar session or import a CSV log.");
+
+                // Native file picker — no typing a full path.
+                if (ImGui::Button(ICON_FA_FOLDER_OPEN " Browse...") && cbs_.on_browse_file)
+                    cbs_.on_browse_file();
+                ImGui::SameLine();
+                ImGui::TextDisabled("(opens a file dialog)");
+
                 ImGui::SetNextItemWidth(-1.0f);
-                ImGui::InputTextWithHint("##load_path", "path to .aar or .csv file",
+                ImGui::InputTextWithHint("##load_path", "...or paste a path to a .aar / .csv file",
                                          state_.load_path, sizeof(state_.load_path));
                 bool has_path = state_.load_path[0] != '\0';
                 ImGui::BeginDisabled(!has_path);

@@ -40,6 +40,7 @@ struct UICallbacks {
     std::function<void(const ModelBindRequest&)> on_model_load;  // load/replace model for a type
     std::function<void(uint16_t)>                on_model_clear; // revert type to procedural
     std::function<void(const std::vector<ModelBindRequest>&)> on_models_save; // persist manifest
+    std::function<void()>               on_browse_file;        // native open dialog → load replay/CSV
 };
 
 struct UIState {

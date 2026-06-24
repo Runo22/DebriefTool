@@ -104,6 +104,15 @@ add_library(rlimgui STATIC ${RLIMGUI_DIR}/rlImGui.cpp)
 target_include_directories(rlimgui PUBLIC ${RLIMGUI_DIR})
 target_link_libraries(rlimgui PUBLIC imgui raylib)
 
+# ── Third-party: tinyfiledialogs (native open/save dialogs) ───────────────────
+# Separate lib so our strict /WX doesn't fail on its old C. Native dialog on
+# Windows (comdlg32); zenity/kdialog/osascript elsewhere.
+add_library(tinyfd STATIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinyfiledialogs/tinyfiledialogs.c)
+target_include_directories(tinyfd PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinyfiledialogs)
+if(WIN32)
+    target_link_libraries(tinyfd PUBLIC comdlg32 ole32 user32 shell32)
+endif()
+
 # ── Third-party: Tracy (optional) ─────────────────────────────────────────────
 if(AFTERACTION_TRACY)
     add_subdirectory(third_party/tracy EXCLUDE_FROM_ALL)
@@ -162,6 +171,7 @@ target_link_libraries(afteraction PRIVATE
     imgui
     rlimgui
     yaml-cpp
+    tinyfd
 )
 
 # ── Strict flags for OUR code only — NOT propagated to submodules ──────────────

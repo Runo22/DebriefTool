@@ -12,8 +12,10 @@
 #include <initializer_list>
 #include <vector>
 #include <filesystem>
+#include <cctype>
 #include "Config.hpp"
 #include "../persistence/CsvImporter.hpp"
+#include "tinyfiledialogs.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -215,63 +217,9 @@ void Application::init_ui_callbacks() {
         persist::Recorder::export_slice(store_, secs, path, "dashcam");
         TraceLog(LOG_INFO, "Saved dashcam to %s", path.c_str());
     };
-    cbs.on_load_file = [this](std::string path) {
-        store_.clear();
-        persist::Recorder::load_into(path, store_);
-        auto [ts, te] = store_.time_range_ns();
-        playback_.seek(ts);
-        playback_.pause();
-    };
-    cbs.on_load_csv = [this](std::string path) {
-        // Flexible importer: map the column names commonly emitted by sim/ACMI
-        // exporters. Only columns actually present in the file are used.
-        persist::CsvImporter imp;
-        using F = persist::CsvField;
-        auto m = [&](std::initializer_list<const char*> names, F f) {
-            for (const char* n : names) imp.map(n, f);
-        };
-        m({"time", "timestamp", "t", "sec", "seconds"},   F::TimestampSec);
-        m({"time_ms", "ms"},                               F::TimestampMs);
-        m({"time_ns", "ns"},                               F::TimestampNs);
-        m({"id", "entity_id", "entityid"},                 F::EntityId);
-        m({"type", "entity_type"},                         F::EntityType);
-        m({"source", "source_id"},                         F::SourceId);
-        m({"callsign", "name"},                            F::Callsign);
-        m({"x", "pos_x", "east", "posx"},                  F::PosX);
-        m({"y", "alt", "altitude", "up", "posy"},          F::PosY);
-        m({"z", "pos_z", "north", "posz"},                 F::PosZ);
-        m({"vx", "vel_x"}, F::VelX);  m({"vy", "vel_y"}, F::VelY);  m({"vz", "vel_z"}, F::VelZ);
-        m({"yaw", "heading", "psi"},                       F::YawDeg);
-        m({"pitch", "theta"},                              F::PitchDeg);
-        m({"roll", "phi"},                                 F::RollDeg);
-        m({"health", "hp"},                                F::Health);
-
-        std::vector<net::EntityState> states = imp.import_all(path);
-        if (states.empty()) return;
-
-        // Group rows by timestamp into per-frame snapshots, in ascending order.
-        std::stable_sort(states.begin(), states.end(),
-            [](const net::EntityState& a, const net::EntityState& b) {
-                return a.timestamp_ns < b.timestamp_ns;
-            });
-
-        store_.clear();
-        std::vector<net::EntityState> frame;
-        uint64_t frame_ts = states.front().timestamp_ns;
-        auto flush = [&] {
-            if (!frame.empty()) store_.ingest(frame_ts, frame);
-            frame.clear();
-        };
-        for (auto& s : states) {
-            if (s.timestamp_ns != frame_ts) { flush(); frame_ts = s.timestamp_ns; }
-            frame.push_back(s);
-        }
-        flush();
-
-        auto [ts, te] = store_.time_range_ns();
-        playback_.seek(ts);
-        playback_.pause();
-    };
+    cbs.on_load_file   = [this](std::string path) { load_session(path); };
+    cbs.on_load_csv    = [this](std::string path) { import_csv(path); };
+    cbs.on_browse_file = [this] { browse_and_load(); };
     cbs.on_load_model = [this](uint16_t type_id, std::string path) {
         if (assets_.load(path, path, 1.0f))
             assets_.map_type(type_id, path);
@@ -328,6 +276,83 @@ void Application::clear_all_entities() {
     origin_set_ = false;
     playback_.stop();   // return to live mode
     TraceLog(LOG_INFO, "Cleared all entities and telemetry store");
+}
+
+// ── Replay-file loading (typed path + native dialog share these) ──────────────
+void Application::load_session(const std::string& path) {
+    store_.clear();
+    persist::Recorder::load_into(path, store_);
+    auto [ts, te] = store_.time_range_ns();
+    playback_.seek(ts);
+    playback_.pause();
+    TraceLog(LOG_INFO, "Loaded session %s", path.c_str());
+}
+
+void Application::import_csv(const std::string& path) {
+    // Flexible importer: map the column names commonly emitted by sim/ACMI
+    // exporters. Only columns actually present in the file are used.
+    persist::CsvImporter imp;
+    using F = persist::CsvField;
+    auto m = [&](std::initializer_list<const char*> names, F f) {
+        for (const char* n : names) imp.map(n, f);
+    };
+    m({"time", "timestamp", "t", "sec", "seconds"},   F::TimestampSec);
+    m({"time_ms", "ms"},                               F::TimestampMs);
+    m({"time_ns", "ns"},                               F::TimestampNs);
+    m({"id", "entity_id", "entityid"},                 F::EntityId);
+    m({"type", "entity_type"},                         F::EntityType);
+    m({"source", "source_id"},                         F::SourceId);
+    m({"callsign", "name"},                            F::Callsign);
+    m({"x", "pos_x", "east", "posx"},                  F::PosX);
+    m({"y", "alt", "altitude", "up", "posy"},          F::PosY);
+    m({"z", "pos_z", "north", "posz"},                 F::PosZ);
+    m({"vx", "vel_x"}, F::VelX);  m({"vy", "vel_y"}, F::VelY);  m({"vz", "vel_z"}, F::VelZ);
+    m({"yaw", "heading", "psi"},                       F::YawDeg);
+    m({"pitch", "theta"},                              F::PitchDeg);
+    m({"roll", "phi"},                                 F::RollDeg);
+    m({"health", "hp"},                                F::Health);
+
+    std::vector<net::EntityState> states = imp.import_all(path);
+    if (states.empty()) return;
+
+    std::stable_sort(states.begin(), states.end(),
+        [](const net::EntityState& a, const net::EntityState& b) {
+            return a.timestamp_ns < b.timestamp_ns;
+        });
+
+    store_.clear();
+    std::vector<net::EntityState> frame;
+    uint64_t frame_ts = states.front().timestamp_ns;
+    auto flush = [&] {
+        if (!frame.empty()) store_.ingest(frame_ts, frame);
+        frame.clear();
+    };
+    for (auto& s : states) {
+        if (s.timestamp_ns != frame_ts) { flush(); frame_ts = s.timestamp_ns; }
+        frame.push_back(s);
+    }
+    flush();
+
+    auto [ts, te] = store_.time_range_ns();
+    playback_.seek(ts);
+    playback_.pause();
+    TraceLog(LOG_INFO, "Imported CSV %s", path.c_str());
+}
+
+void Application::browse_and_load() {
+    // Native open dialog (Windows comdlg32 / zenity / osascript). Filter to the
+    // formats we can replay; dispatch by extension.
+    static const char* kFilters[] = { "*.aar", "*.csv" };
+    const char* sel = tinyfd_openFileDialog(
+        "Open replay or CSV log", recordings_dir().c_str(),
+        2, kFilters, "AfterAction session (.aar) / CSV", 0);
+    if (!sel) return;   // cancelled
+    std::string path = sel;
+    snprintf(ui_.state().load_path, sizeof(ui_.state().load_path), "%s", path.c_str());
+    std::string ext = std::filesystem::path(path).extension().string();
+    for (auto& c : ext) c = (char)tolower((unsigned char)c);
+    if (ext == ".csv") import_csv(path);
+    else               load_session(path);
 }
 
 void Application::repoint_entities_of_type(uint16_t type) {
