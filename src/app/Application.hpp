@@ -52,6 +52,10 @@ private:
     // draw_terrain() so ground markers/drop-lines can sit on the terrain even when
     // it has relief. Returns 0 when terrain is disabled.
     float terrain_height_at(float wx, float wz) const;
+
+    // A ground ring that follows the terrain relief (vertices lifted to terrain
+    // height) — used for selection/altitude markers so they don't sink into hills.
+    void draw_ground_ring(float cx, float cz, float radius, Color col) const;
     void render_ui();
     void handle_input(float dt);
     void update_camera_state(float dt);

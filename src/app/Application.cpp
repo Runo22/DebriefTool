@@ -859,17 +859,18 @@ void Application::render_3d() {
                 // Bright vertical tie-line from the chevron down to the terrain.
                 DrawLine3D({rp.x, gh, rp.z}, dp, {255, 220, 0, 130});
 
-                // Ground rings on the terrain surface (visible over relief).
-                DrawCircle3D({rp.x, gh + 4.f, rp.z}, 600.f,  {1,0,0}, 90.f, {255,220,0,160});
-                DrawCircle3D({rp.x, gh + 4.f, rp.z}, 1200.f, {1,0,0}, 90.f, {255,220,0,80});
-                DrawCircle3D({rp.x, gh + 4.f, rp.z}, 2400.f, {1,0,0}, 90.f, {255,220,0,35});
+                // Ground rings that FOLLOW the terrain relief (a flat circle was
+                // half-buried on slopes).
+                draw_ground_ring(rp.x, rp.z, 600.f,  {255,220,0,160});
+                draw_ground_ring(rp.x, rp.z, 1200.f, {255,220,0,80});
+                draw_ground_ring(rp.x, rp.z, 2400.f, {255,220,0,35});
             }
 
             // Altitude drop line from the terrain up to the entity position.
             if (rp.y - gh > 10.0f) {
                 DrawLine3D({rp.x, gh, rp.z}, rp, {0, 190, 255, 160});
                 float sr = std::max(50.f, (pos.v.y - gh) * 0.03f);
-                DrawCircle3D({rp.x, gh + 2.f, rp.z}, sr, {1,0,0}, 90.f, {0, 190, 255, 100});
+                draw_ground_ring(rp.x, rp.z, sr, {0, 190, 255, 100});
             }
 
             // Velocity vector (in exaggerated space)
@@ -1029,6 +1030,23 @@ float Application::terrain_height_at(float wx, float wz) const {
             + 120.0f * cosf(wx * 0.0004f + 2.0f)  * cosf(wz * 0.0003f)
             +  40.0f * sinf(wx * 0.001f)           * sinf(wz * 0.001f);
     return h * state.terrain_height_scale;
+}
+
+// A horizontal ground ring that hugs the terrain: each vertex is lifted to the
+// terrain height at that point (plus a small offset), so it follows slopes
+// instead of cutting a flat disc half-under the hill.
+void Application::draw_ground_ring(float cx, float cz, float radius, Color col) const {
+    const int   segs = 48;
+    const float lift = std::max(8.0f, radius * 0.01f);   // sit just above terrain
+    Vector3 prev{};
+    for (int i = 0; i <= segs; ++i) {
+        float a = (float)i / segs * 2.0f * PI;
+        float x = cx + cosf(a) * radius;
+        float z = cz + sinf(a) * radius;
+        Vector3 cur{ x, terrain_height_at(x, z) + lift, z };
+        if (i > 0) DrawLine3D(prev, cur, col);
+        prev = cur;
+    }
 }
 
 void Application::draw_terrain() {
