@@ -46,7 +46,9 @@ if(MSVC)
         _CRT_SECURE_NO_WARNINGS   # suppress the entire memcpy/strncpy "unsafe" family
         _CRT_NONSTDC_NO_WARNINGS  # suppress _strdup/_stricmp POSIX name deprecation
         NOMINMAX
-        WIN32_LEAN_AND_MEAN
+        # NOTE: WIN32_LEAN_AND_MEAN is intentionally NOT global — it makes
+        # <windows.h> skip <commdlg.h>, which breaks tinyfiledialogs
+        # (OPENFILENAMEW undefined). It's applied to the afteraction target only.
     )
 else()
     # Suppress deprecated-declaration noise from third-party libs on macOS Clang 15+
@@ -187,8 +189,10 @@ if(MSVC)
     # NOGDI/NOUSER prevent wingdi.h and winuser.h from being included via winsock2.h
     # in our TUs. Those headers declare Rectangle() and DrawText() as Win32 API
     # functions that conflict with raylib's Rectangle struct and DrawText function.
-    # Applied per-target so GLFW (a separate target) still gets those headers.
-    target_compile_definitions(afteraction PRIVATE NOGDI NOUSER)
+    # WIN32_LEAN_AND_MEAN trims windows.h for our winsock-using TUs. All applied
+    # per-target so tinyfiledialogs (which needs the full windows.h incl. commdlg)
+    # and GLFW still get the headers they require.
+    target_compile_definitions(afteraction PRIVATE NOGDI NOUSER WIN32_LEAN_AND_MEAN)
 else()
     target_compile_options(afteraction PRIVATE
         -Wall

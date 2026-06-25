@@ -734,11 +734,15 @@ void Application::maybe_auto_frame() {
     auto_framed_ = true;               // only attempt at the first appearance
     if (active != 1) return;           // multiple arrived at once — leave default view
 
-    // Centre on the track (render space applies altitude exaggeration to Y) and
-    // pull in to a distance that frames a single entity nicely.
+    // Centre on the track. The entity renders at altitude-exaggerated Y, so the
+    // free-orbit target must use the same exaggerated Y to put it in the middle.
     camera_free_target_ = { p.x, p.y * st.altitude_exaggerate, p.z };
-    st.camera_distance  = std::clamp(st.entity_3d_scale * 80.0f, 800.0f, 8000.0f);
-    TraceLog(LOG_INFO, "Auto-framed camera on first entity");
+    st.camera_distance  = std::clamp(st.entity_3d_scale * 90.0f, 1500.0f, 7000.0f);
+    // Force a sane downward 3/4 view so it's framed properly regardless of the
+    // pitch saved in the user's config (a steep/inverted saved pitch otherwise
+    // made the camera look up from below the track).
+    st.camera_pitch     = 18.0f;
+    TraceLog(LOG_INFO, "Auto-framed camera on first entity (alt %.0f m)", p.y);
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
@@ -761,14 +765,16 @@ void Application::render() {
 }
 
 void Application::render_3d() {
-    // Depth precision scales with the near/far ratio. A fixed 1m near plane
-    // against a 2000km far plane gives a ratio of ~2,000,000 which destroys
-    // depth precision and causes z-fighting / wireframe flicker at far zoom.
-    // Scale the near plane with camera distance so the ratio stays sane while
-    // still letting close-up views keep a tight near plane.
+    // Depth precision is governed by the FAR/NEAR ratio. Previously the far plane
+    // was pinned to far_clip_plane (default 2000 km), so even with a scaled near
+    // plane the ratio stayed in the tens-of-thousands — which causes z-fighting
+    // and terrain "clipping"/dropouts. The terrain fades into fog by ~cam_dist*2.6,
+    // so the far plane only needs to reach a few × cam_dist. Scale it to the view
+    // and let far_clip_plane act purely as an upper CAP.
     const float cam_dist   = ui_.state().camera_distance;
-    const float near_plane = std::clamp(cam_dist * 0.01f, 1.0f, 2000.0f);
-    const float far_plane  = std::max(ui_.state().far_clip_plane, cam_dist * 4.0f);
+    const float near_plane = std::clamp(cam_dist * 0.004f, 0.5f, 400.0f);
+    float far_plane        = std::max(cam_dist * 4.0f, 60000.0f);   // cover terrain + fog
+    far_plane = std::min(far_plane, std::max(ui_.state().far_clip_plane, near_plane * 4.0f));
     rlSetClipPlanes(near_plane, far_plane);
     BeginMode3D(camera_);
 
