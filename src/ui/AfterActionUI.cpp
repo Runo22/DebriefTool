@@ -810,7 +810,7 @@ void AfterActionUI::draw_settings_window() {
             if (ImGui::BeginTabItem("Graphics")) {
                 ImGui::Text("Far Clip Plane (Render Distance)");
                 ImGui::SetNextItemWidth(-1.0f);
-                ImGui::SliderFloat("##FarClip", &state_.far_clip_plane, 10000.0f, 2000000.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
+                ImGui::SliderFloat("##FarClip", &state_.far_clip_plane, 10000.0f, 50000000.0f, "%.0f m", ImGuiSliderFlags_Logarithmic);
 
                 ImGui::Text("Terrain Mode");
                 const char* terrain_modes[] = { "None", "Wireframe", "Solid", "Both" };

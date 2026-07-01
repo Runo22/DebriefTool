@@ -460,6 +460,8 @@ void Application::process_inbound_queue() {
 
     live_states_.clear();
     while (auto frame = inbound_queue_.try_pop()) {
+        // A count==0 control packet clears all tracks (deferred to tick() start).
+        if (frame->clear_all) { clear_requested_ = true; continue; }
         for (auto& es : frame->entities) {
             ensure_origin_and_convert(es, false);
             apply_state_to_ecs(es);
@@ -765,16 +767,16 @@ void Application::render() {
 }
 
 void Application::render_3d() {
-    // Depth precision is governed by the FAR/NEAR ratio. Previously the far plane
-    // was pinned to far_clip_plane (default 2000 km), so even with a scaled near
-    // plane the ratio stayed in the tens-of-thousands — which causes z-fighting
-    // and terrain "clipping"/dropouts. The terrain fades into fog by ~cam_dist*2.6,
-    // so the far plane only needs to reach a few × cam_dist. Scale it to the view
-    // and let far_clip_plane act purely as an upper CAP.
+    // Depth precision is governed by the FAR/NEAR ratio, not the absolute values,
+    // so we keep that ratio roughly constant (~5000, which a 24-bit depth buffer
+    // handles without z-fighting) by scaling the near plane to whatever far plane
+    // we use. The far plane follows the zoom (terrain fades into fog by
+    // ~cam_dist*2.6, so cam_dist*6 always covers it) and is capped by the user's
+    // far_clip_plane, so raising that setting extends distance when zoomed out.
     const float cam_dist   = ui_.state().camera_distance;
-    const float near_plane = std::clamp(cam_dist * 0.004f, 0.5f, 400.0f);
-    float far_plane        = std::max(cam_dist * 4.0f, 60000.0f);   // cover terrain + fog
-    far_plane = std::min(far_plane, std::max(ui_.state().far_clip_plane, near_plane * 4.0f));
+    const float far_plane  = std::clamp(cam_dist * 6.0f, 40000.0f,
+                                        ui_.state().far_clip_plane);
+    const float near_plane = std::clamp(far_plane / 5000.0f, 0.3f, 500.0f);
     rlSetClipPlanes(near_plane, far_plane);
     BeginMode3D(camera_);
 
@@ -1383,6 +1385,12 @@ void Application::update_camera_state(float dt) {
             state.camera_distance * sinf(pitch_rad),
             state.camera_distance * cosf(pitch_rad) * cosf(yaw_rad)
         });
+        // Never let the orbit camera dip below the terrain surface — otherwise you
+        // see straight through the ground (terrain "clipping" against the near
+        // plane). Keep it a small margin above the hill it's over.
+        float ground = terrain_height_at(camera_.position.x, camera_.position.z);
+        float min_y  = ground + std::max(5.0f, state.camera_distance * 0.02f);
+        if (camera_.position.y < min_y) camera_.position.y = min_y;
         camera_.up = { 0.0f, 1.0f, 0.0f };
     }
 }
