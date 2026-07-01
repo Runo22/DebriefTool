@@ -1044,8 +1044,14 @@ float Application::terrain_height_at(float wx, float wz) const {
 // terrain height at that point (plus a small offset), so it follows slopes
 // instead of cutting a flat disc half-under the hill.
 void Application::draw_ground_ring(float cx, float cz, float radius, Color col) const {
-    const int   segs = 48;
-    const float lift = std::max(8.0f, radius * 0.01f);   // sit just above terrain
+    // More segments so the polyline hugs the relief closely, and a lift that
+    // scales with radius so the chord between samples doesn't dip into a hill.
+    const int   segs = std::clamp(static_cast<int>(radius / 40.0f), 48, 160);
+    const float lift = std::max(15.0f, radius * 0.02f);
+    // Draw with depth-test OFF so the marker is never hidden behind a hill — a
+    // selection ring you can only half-see is worse than one drawn on top.
+    rlDrawRenderBatchActive();   // flush queued 3D so the state change is clean
+    rlDisableDepthTest();
     Vector3 prev{};
     for (int i = 0; i <= segs; ++i) {
         float a = (float)i / segs * 2.0f * PI;
@@ -1055,6 +1061,8 @@ void Application::draw_ground_ring(float cx, float cz, float radius, Color col) 
         if (i > 0) DrawLine3D(prev, cur, col);
         prev = cur;
     }
+    rlDrawRenderBatchActive();   // flush the ring while depth-test is still off
+    rlEnableDepthTest();
 }
 
 void Application::draw_terrain() {
