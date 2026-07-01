@@ -58,9 +58,16 @@ bash scripts/bootstrap.sh
 
 ### Install
 
-`cmake --install <build-dir> --prefix <dir>` lays down just **AfterAction** +
-`hangar` + `assets/` under `<dir>/bin` (no third-party libs/headers). Recordings,
-config, and logs are written next to the executable at runtime.
+```sh
+cmake --install <build-dir>
+```
+
+Installs just **AfterAction** + `hangar` + `assets/` (plus the required runtime
+DLLs on Windows) under `<prefix>/bin` — no third-party libs/headers. By default
+the prefix is a local **`install/`** folder next to the source, so it needs **no
+admin/root** (not `C:\Program Files`). Override with `--prefix <dir>` or
+`-DCMAKE_INSTALL_PREFIX=<dir>` at configure time. Recordings, config, and logs
+are written next to the executable at runtime.
 
 ---
 

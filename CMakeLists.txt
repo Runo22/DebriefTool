@@ -1,6 +1,15 @@
 cmake_minimum_required(VERSION 3.25)
 project(afteraction VERSION 0.1.0 LANGUAGES CXX C)
 
+# Default install location: a local "install/" folder next to the source, NOT
+# the platform default (C:/Program Files on Windows / /usr/local on Unix), which
+# needs admin/root. Only overrides when the user hasn't chosen a prefix — you can
+# still pass -DCMAKE_INSTALL_PREFIX=... or `cmake --install <dir> --prefix <dir>`.
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+    set(CMAKE_INSTALL_PREFIX "${CMAKE_SOURCE_DIR}/install"
+        CACHE PATH "Install location (default: <source>/install)" FORCE)
+endif()
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

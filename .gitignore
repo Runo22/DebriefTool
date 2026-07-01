@@ -1,6 +1,7 @@
 # Build
 build/
 out/
+install/
 .cache/
 CMakeCache.txt
 CMakeFiles/
