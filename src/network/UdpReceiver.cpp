@@ -51,12 +51,13 @@ bool UdpReceiver::open_socket(const std::string& addr, uint16_t port) noexcept {
 
     // Re-bind behaviour is platform-specific:
     //  * POSIX: SO_REUSEADDR lets us re-bind the SAME port immediately after a
-    //    restart (Settings → Network "Apply") instead of waiting out TIME_WAIT.
+    //    restart (Settings -> Network "Apply") instead of getting EADDRINUSE
+    //    while the previous socket is still closing.
     //  * Windows: SO_REUSEADDR there means "allow sharing/stealing a bound port",
     //    which lets our wildcard (0.0.0.0) UDP socket interfere with OTHER apps
-    //    binding the same port — so we DON'T use it. UDP has no TIME_WAIT on
-    //    Windows anyway, so a normal exclusive bind re-binds fine. This keeps
-    //    AfterAction to its single configured port and out of everything else.
+    //    binding the same port -- so we DON'T use it. A plain exclusive bind
+    //    re-binds fine once our own socket is closed. This keeps AfterAction to
+    //    its single configured port and out of everything else's way.
 #ifndef _WIN32
     int reuse = 1;
     ::setsockopt(sock_, SOL_SOCKET, SO_REUSEADDR,

@@ -460,8 +460,13 @@ void Application::process_inbound_queue() {
 
     live_states_.clear();
     while (auto frame = inbound_queue_.try_pop()) {
-        // A count==0 control packet clears all tracks (deferred to tick() start).
-        if (frame->clear_all) { clear_requested_ = true; continue; }
+        // A count==0 control packet clears all tracks. Do it IMMEDIATELY (we're at
+        // a safe point — before world_.progress, not inside a query) rather than
+        // deferring, so any initial-state frames a sender sends right after CLEAR,
+        // in this same drain, are applied onto the freshly-cleared world instead
+        // of being wiped on the next tick. (clear_all_entities() also resets
+        // live_states_, so pre-CLEAR frames in this batch are correctly dropped.)
+        if (frame->clear_all) { clear_all_entities(); continue; }
         for (auto& es : frame->entities) {
             ensure_origin_and_convert(es, false);
             apply_state_to_ecs(es);
@@ -773,9 +778,13 @@ void Application::render_3d() {
     // we use. The far plane follows the zoom (terrain fades into fog by
     // ~cam_dist*2.6, so cam_dist*6 always covers it) and is capped by the user's
     // far_clip_plane, so raising that setting extends distance when zoomed out.
+    // Use min/max (not std::clamp): if the user sets far_clip_plane below our
+    // preferred cam_dist*6, clamp(x, lo, hi) with lo>hi would be UB. Here far is
+    // cam_dist*6 capped by the user's setting, then floored so the near-plane
+    // math stays valid even at extreme zoom-in.
     const float cam_dist   = ui_.state().camera_distance;
-    const float far_plane  = std::clamp(cam_dist * 6.0f, 40000.0f,
-                                        ui_.state().far_clip_plane);
+    float far_plane  = std::min(cam_dist * 6.0f, ui_.state().far_clip_plane);
+    far_plane        = std::max(far_plane, 1000.0f);
     const float near_plane = std::clamp(far_plane / 5000.0f, 0.3f, 500.0f);
     rlSetClipPlanes(near_plane, far_plane);
     BeginMode3D(camera_);

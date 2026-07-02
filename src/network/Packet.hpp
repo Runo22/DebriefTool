@@ -26,7 +26,7 @@
 //
 //  Entity types: 0=unknown, 1=jet, 2=missile, 3=aaa, 4=ground, 5=helo, 6=ship
 //
-//  Angles: aviation convention (all ASCII, degrees)
+//  Angles: aviation convention (binary float64, values in degrees)
 //    psi   = heading  (0 = North, 90 = East, clockwise, 0..360 deg)
 //    theta = pitch    (positive = nose up, -90 to +90 deg)
 //    phi   = roll     (positive = right bank, -180 to +180 deg)
