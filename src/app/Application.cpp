@@ -460,6 +460,13 @@ void Application::process_inbound_queue() {
 
     live_states_.clear();
     while (auto frame = inbound_queue_.try_pop()) {
+        // A count==0 control packet clears all tracks. Do it IMMEDIATELY (we're at
+        // a safe point — before world_.progress, not inside a query) rather than
+        // deferring, so any initial-state frames a sender sends right after CLEAR,
+        // in this same drain, are applied onto the freshly-cleared world instead
+        // of being wiped on the next tick. (clear_all_entities() also resets
+        // live_states_, so pre-CLEAR frames in this batch are correctly dropped.)
+        if (frame->clear_all) { clear_all_entities(); continue; }
         for (auto& es : frame->entities) {
             ensure_origin_and_convert(es, false);
             apply_state_to_ecs(es);
@@ -734,11 +741,15 @@ void Application::maybe_auto_frame() {
     auto_framed_ = true;               // only attempt at the first appearance
     if (active != 1) return;           // multiple arrived at once — leave default view
 
-    // Centre on the track (render space applies altitude exaggeration to Y) and
-    // pull in to a distance that frames a single entity nicely.
+    // Centre on the track. The entity renders at altitude-exaggerated Y, so the
+    // free-orbit target must use the same exaggerated Y to put it in the middle.
     camera_free_target_ = { p.x, p.y * st.altitude_exaggerate, p.z };
-    st.camera_distance  = std::clamp(st.entity_3d_scale * 80.0f, 800.0f, 8000.0f);
-    TraceLog(LOG_INFO, "Auto-framed camera on first entity");
+    st.camera_distance  = std::clamp(st.entity_3d_scale * 90.0f, 1500.0f, 7000.0f);
+    // Force a sane downward 3/4 view so it's framed properly regardless of the
+    // pitch saved in the user's config (a steep/inverted saved pitch otherwise
+    // made the camera look up from below the track).
+    st.camera_pitch     = 18.0f;
+    TraceLog(LOG_INFO, "Auto-framed camera on first entity (alt %.0f m)", p.y);
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
@@ -761,14 +772,20 @@ void Application::render() {
 }
 
 void Application::render_3d() {
-    // Depth precision scales with the near/far ratio. A fixed 1m near plane
-    // against a 2000km far plane gives a ratio of ~2,000,000 which destroys
-    // depth precision and causes z-fighting / wireframe flicker at far zoom.
-    // Scale the near plane with camera distance so the ratio stays sane while
-    // still letting close-up views keep a tight near plane.
+    // Depth precision is governed by the FAR/NEAR ratio, not the absolute values,
+    // so we keep that ratio roughly constant (~5000, which a 24-bit depth buffer
+    // handles without z-fighting) by scaling the near plane to whatever far plane
+    // we use. The far plane follows the zoom (terrain fades into fog by
+    // ~cam_dist*2.6, so cam_dist*6 always covers it) and is capped by the user's
+    // far_clip_plane, so raising that setting extends distance when zoomed out.
+    // Use min/max (not std::clamp): if the user sets far_clip_plane below our
+    // preferred cam_dist*6, clamp(x, lo, hi) with lo>hi would be UB. Here far is
+    // cam_dist*6 capped by the user's setting, then floored so the near-plane
+    // math stays valid even at extreme zoom-in.
     const float cam_dist   = ui_.state().camera_distance;
-    const float near_plane = std::clamp(cam_dist * 0.01f, 1.0f, 2000.0f);
-    const float far_plane  = std::max(ui_.state().far_clip_plane, cam_dist * 4.0f);
+    float far_plane  = std::min(cam_dist * 6.0f, ui_.state().far_clip_plane);
+    far_plane        = std::max(far_plane, 1000.0f);
+    const float near_plane = std::clamp(far_plane / 5000.0f, 0.3f, 500.0f);
     rlSetClipPlanes(near_plane, far_plane);
     BeginMode3D(camera_);
 
@@ -1036,8 +1053,14 @@ float Application::terrain_height_at(float wx, float wz) const {
 // terrain height at that point (plus a small offset), so it follows slopes
 // instead of cutting a flat disc half-under the hill.
 void Application::draw_ground_ring(float cx, float cz, float radius, Color col) const {
-    const int   segs = 48;
-    const float lift = std::max(8.0f, radius * 0.01f);   // sit just above terrain
+    // More segments so the polyline hugs the relief closely, and a lift that
+    // scales with radius so the chord between samples doesn't dip into a hill.
+    const int   segs = std::clamp(static_cast<int>(radius / 40.0f), 48, 160);
+    const float lift = std::max(15.0f, radius * 0.02f);
+    // Draw with depth-test OFF so the marker is never hidden behind a hill — a
+    // selection ring you can only half-see is worse than one drawn on top.
+    rlDrawRenderBatchActive();   // flush queued 3D so the state change is clean
+    rlDisableDepthTest();
     Vector3 prev{};
     for (int i = 0; i <= segs; ++i) {
         float a = (float)i / segs * 2.0f * PI;
@@ -1047,6 +1070,8 @@ void Application::draw_ground_ring(float cx, float cz, float radius, Color col) 
         if (i > 0) DrawLine3D(prev, cur, col);
         prev = cur;
     }
+    rlDrawRenderBatchActive();   // flush the ring while depth-test is still off
+    rlEnableDepthTest();
 }
 
 void Application::draw_terrain() {
@@ -1377,6 +1402,12 @@ void Application::update_camera_state(float dt) {
             state.camera_distance * sinf(pitch_rad),
             state.camera_distance * cosf(pitch_rad) * cosf(yaw_rad)
         });
+        // Never let the orbit camera dip below the terrain surface — otherwise you
+        // see straight through the ground (terrain "clipping" against the near
+        // plane). Keep it a small margin above the hill it's over.
+        float ground = terrain_height_at(camera_.position.x, camera_.position.z);
+        float min_y  = ground + std::max(5.0f, state.camera_distance * 0.02f);
+        if (camera_.position.y < min_y) camera_.position.y = min_y;
         camera_.up = { 0.0f, 1.0f, 0.0f };
     }
 }

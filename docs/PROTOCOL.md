@@ -31,11 +31,23 @@ frames so you do not need a high rate.
 | Field       | Type       | Bytes | Description |
 |-------------|------------|-------|-------------|
 | `magic`     | `uint8[4]` | 4     | Must be the ASCII bytes `D B F 1` (`b"DBF1"`). |
-| `count`     | `uint8`    | 1     | Number of `EntityUpdate` records that follow. `1`–`14` to stay within one 1500-byte MTU. |
+| `count`     | `uint8`    | 1     | Number of `EntityUpdate` records that follow. `1`–`14` to stay within one 1500-byte MTU. **`0` = clear all tracks** (see below). |
 | `source_id` | `uint8`    | 1     | Identifier for this data source. Use `0` if you only have one. Lets multiple feeds coexist. |
 | `sequence`  | `uint32`   | 4     | Increment by 1 each packet you send. Used only for drop/reorder detection. Wraps cleanly (≈2.2 years at 60 Hz). Restarting your sender at `0` is fine. |
 
 Python format string: `"<4sBBI"`
+
+### Clear all tracks (control packet)
+
+Send a **header-only packet with `count = 0`** (no `EntityUpdate` records, so
+just the 10 header bytes) to wipe every entity — handy at the start of a new
+session or scenario:
+
+```python
+sock.sendto(struct.pack("<4sBBI", b"DBF1", 0, 0, seq), (host, 22522))
+```
+
+The demo sender has a shortcut: `python scripts/test_sender.py --clear`.
 
 ---
 

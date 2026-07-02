@@ -3,12 +3,12 @@
 #include <vector>
 #include <array>
 
-// ─────────────────────────────────────────────────────────────────────────────
-//  AFTERACTION UDP Wire Protocol  —  send packets to UDP port 22522
+// -----------------------------------------------------------------------------
+//  AFTERACTION UDP Wire Protocol  --  send packets to UDP port 22522
 //
 //  Packet layout:
 //    [ BatchHeader   10 bytes ]
-//    [ EntityUpdate 103 bytes ] × count   (1 – 14 per packet)
+//    [ EntityUpdate 103 bytes ]  repeated 'count' times   (1..14 per packet)
 //
 //  Example (Python, 2 entities):
 //    import socket, struct, time
@@ -18,15 +18,19 @@
 //              lat, lon, alt, phi, theta, psi, speed, time.time_ns())
 //    sock.sendto(hdr + ent + ent2, ('127.0.0.1', 22522))
 //
+//  CLEAR ALL TRACKS: send a header-only packet with count = 0 (no EntityUpdate
+//    records). This wipes every entity, e.g. at the start of a new session:
+//    sock.sendto(struct.pack('<4sBBI', b'DBF1', 0, 0, seq), ('127.0.0.1', 22522))
+//
 //  See docs/PROTOCOL.md for the full field reference, units and examples.
 //
 //  Entity types: 0=unknown, 1=jet, 2=missile, 3=aaa, 4=ground, 5=helo, 6=ship
 //
-//  Angles: aviation convention
-//    psi   = heading  (0 = North, 90 = East, clockwise, 0–360°)
-//    theta = pitch    (positive = nose up, –90 to +90°)
-//    phi   = roll     (positive = right bank, –180 to +180°)
-// ─────────────────────────────────────────────────────────────────────────────
+//  Angles: aviation convention (binary float64, values in degrees)
+//    psi   = heading  (0 = North, 90 = East, clockwise, 0..360 deg)
+//    theta = pitch    (positive = nose up, -90 to +90 deg)
+//    phi   = roll     (positive = right bank, -180 to +180 deg)
+// -----------------------------------------------------------------------------
 
 namespace afteraction::net {
 
@@ -34,12 +38,13 @@ namespace afteraction::net {
 // format, the in-memory state and the recording format.
 inline constexpr int kCallsignLen = 32;
 
-// ── Wire-format structs (no padding, little-endian) ───────────────────────────
+// -- Wire-format structs (no padding, little-endian) ------------------------
 #pragma pack(push, 1)
 
 struct BatchHeader {
     uint8_t  magic[4];   // {'D','B','F','1'}
-    uint8_t  count;      // number of EntityUpdate records that follow (1–14)
+    uint8_t  count;      // number of EntityUpdate records that follow (1..14).
+                         // count == 0 is a "clear all tracks" control packet.
     uint8_t  source_id;  // 0 if you only have one data source
     uint32_t sequence;   // increment each packet; used for drop detection.
                          // 32-bit: ~2.2 years of headroom at 60 Hz before wrap.
@@ -56,8 +61,8 @@ struct EntityUpdate {
     double   lon;                   // longitude (decimal degrees, e.g.  35.1200)
     double   alt;                   // altitude  (metres above sea level)
 
-    double   phi;                   // roll    (degrees, –180 to +180)
-    double   theta;                 // pitch   (degrees,  –90 to  +90)
+    double   phi;                   // roll    (degrees, -180 to +180)
+    double   theta;                 // pitch   (degrees,  -90 to  +90)
     double   psi;                   // heading (degrees, 0 = North, 90 = East, clockwise)
 
     double   speed;                 // airspeed m/s   (0 = unknown)
@@ -83,7 +88,7 @@ inline constexpr uint8_t kMaxPerPkt   = 14;   // 10 + 14*103 = 1452 B, fits 1500
 static_assert(sizeof(BatchHeader)  == 10, "BatchHeader must be 10 bytes");
 static_assert(sizeof(EntityUpdate) == 103, "EntityUpdate must be 103 bytes");
 
-// ── In-memory decoded state (used throughout the engine) ──────────────────────
+// -- In-memory decoded state (used throughout the engine) --------------------
 // Filled by PacketParser; lat/lon/euler stored verbatim from the wire.
 // position[] and orientation[] are filled by Application (ENU conversion).
 struct EntityState {
@@ -116,6 +121,7 @@ struct ParsedFrame {
     uint8_t  source_id = 0;
     uint32_t sequence  = 0;
     std::vector<EntityState> entities;
+    bool     clear_all = false;   // set when count == 0 (a "clear all tracks" packet)
 };
 
 } // namespace afteraction::net

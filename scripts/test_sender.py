@@ -70,10 +70,19 @@ def main():
     ap.add_argument('--host', default='127.0.0.1')
     ap.add_argument('--port', type=int, default=22522)
     ap.add_argument('--hz',   type=float, default=10.0, help='Update rate (default 10 Hz)')
+    ap.add_argument('--clear', action='store_true',
+                    help='Send one "clear all tracks" packet (count=0) and exit')
     args = ap.parse_args()
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     target = (args.host, args.port)
+
+    # A header-only packet with count=0 wipes every entity in the viewer.
+    if args.clear:
+        sock.sendto(make_packet([], seq=0), target)
+        print(f"Sent CLEAR (count=0) to {args.host}:{args.port}")
+        return
+
     interval = 1.0 / args.hz
     seq = 0
     t0  = time.monotonic()

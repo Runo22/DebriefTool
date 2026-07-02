@@ -49,12 +49,20 @@ bool UdpReceiver::open_socket(const std::string& addr, uint16_t port) noexcept {
     sock_ = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (sock_ == kInvalidSocket) return false;
 
-    // Allow immediate re-bind to the same port (e.g. after a restart from the
-    // Settings → Network "Apply", or a quick relaunch) instead of failing while
-    // the previous socket lingers in TIME_WAIT.
+    // Re-bind behaviour is platform-specific:
+    //  * POSIX: SO_REUSEADDR lets us re-bind the SAME port immediately after a
+    //    restart (Settings -> Network "Apply") instead of getting EADDRINUSE
+    //    while the previous socket is still closing.
+    //  * Windows: SO_REUSEADDR there means "allow sharing/stealing a bound port",
+    //    which lets our wildcard (0.0.0.0) UDP socket interfere with OTHER apps
+    //    binding the same port -- so we DON'T use it. A plain exclusive bind
+    //    re-binds fine once our own socket is closed. This keeps AfterAction to
+    //    its single configured port and out of everything else's way.
+#ifndef _WIN32
     int reuse = 1;
     ::setsockopt(sock_, SOL_SOCKET, SO_REUSEADDR,
                  reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+#endif
 
     // Set a receive timeout so the loop can check the stop flag periodically.
 #ifdef _WIN32

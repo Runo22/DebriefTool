@@ -28,6 +28,8 @@ PacketParser::parse(std::span<const std::byte> buf) noexcept
     ParsedFrame frame;
     frame.source_id = hdr.source_id;
     frame.sequence  = hdr.sequence;
+    // A header with count == 0 is a control packet meaning "clear all tracks".
+    frame.clear_all = (hdr.count == 0);
     frame.entities.reserve(hdr.count);
 
     const std::byte* ptr = buf.data() + sizeof(BatchHeader);
