@@ -20,7 +20,7 @@ namespace {
 constexpr double kRootHalf = 2097152.0;   // 2^21 m: the quadtree covers ±2097 km
 constexpr int    kGrid     = 64;          // quads per chunk edge
 constexpr int    kMaxLevel = 16;
-constexpr size_t kMaxChunks = 2500;       // cache size before eviction
+constexpr size_t kMaxChunks = 1200;       // cache size before eviction (~210 MB of VRAM)
 constexpr int    kUploadsPerFrame = 12;
 
 // ── Shaders ───────────────────────────────────────────────────────────────────
