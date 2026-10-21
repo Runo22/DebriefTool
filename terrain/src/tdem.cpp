@@ -250,7 +250,14 @@ std::optional<float> Database::Impl::blended(double lat, double lon, float min_r
         sum += remaining * w * *h;
         remaining *= (1.0 - w);
     }
-    if (!any) return std::nullopt;
+    if (!any) {
+        // Every covering layer is finer than requested: use the coarsest of them
+        // rather than reporting "no data".
+        if (min_res <= 0.0f) return std::nullopt;
+        for (size_t li = layers.size(); li-- > 0;)
+            if (auto h = bilinear(li, lat, lon, nullptr)) return h;
+        return std::nullopt;
+    }
     // Outer edge of the coarsest covering layer: renormalise what we have.
     if (remaining > 1e-6) {
         if (remaining >= 1.0 - 1e-9) {

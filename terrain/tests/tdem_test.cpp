@@ -119,6 +119,9 @@ int main(int argc, char** argv) {
         auto fine = db.height(40.0789, 32.5656);
         auto coarse = db.height(40.0789, 32.5656, 100.0f);
         CHECK(fine && coarse && std::fabs(*fine - *coarse) < 30.0f, "lod query");
+        // Coarser than every layer: still answers, from the coarsest one.
+        auto very = db.height(40.0789, 32.5656, 100000.0f);
+        CHECK(very && std::fabs(*very - *fine) < 60.0f, "lod query above all resolutions");
     }
 
     // 5. C API.

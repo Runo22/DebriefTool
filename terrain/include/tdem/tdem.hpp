@@ -67,7 +67,8 @@ public:
     std::optional<float> height(double lat, double lon) const;
 
     // Same, but ignoring layers finer than min_resolution_m — use for distant
-    // terrain LODs so far-away meshes don't alias 5 m data.
+    // terrain LODs so far-away meshes don't alias 5 m data. If only finer
+    // layers cover the point, the coarsest of them is used.
     std::optional<float> height(double lat, double lon, float min_resolution_m) const;
 
     float height_or(double lat, double lon, float fallback = 0.0f) const;
