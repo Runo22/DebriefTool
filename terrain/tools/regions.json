@@ -1,0 +1,51 @@
+{
+  "_comment": "Layer definitions for build_pack.py. bbox = [south, west, north, east] in degrees. A layer is either bbox-based or centred on an airfield (ICAO) with half_km. Spacing is in arc-seconds (aligned to the Copernicus grid) or metres (upsampled). quant_m = height quantisation step; blend_m = distance over which the layer fades into the next coarser one at its edges.",
+
+  "sources": {
+    "glo30": { "arcsec": 1, "name": "Copernicus_DSM_COG_10_N{lat:02d}_00_E{lon:03d}_00_DEM",
+               "url": "https://copernicus-dem-30m.s3.amazonaws.com/{name}/{name}.tif" },
+    "glo90": { "arcsec": 3, "name": "Copernicus_DSM_COG_30_N{lat:02d}_00_E{lon:03d}_00_DEM",
+               "url": "https://copernicus-dem-90m.s3.amazonaws.com/{name}/{name}.tif" }
+  },
+
+  "runways": {
+    "_comment": "Runways flattened into every layer that covers them. Geometry from OurAirports (public domain).",
+    "profile_source": "glo30",
+    "airfields": ["LTAE", "LTAG", "LTBL", "LTAC", "LTAD", "LTAB"]
+  },
+
+  "packs": [
+    {
+      "file": "turkey_base.tdem",
+      "description": "Turkey 7.5in base (Copernicus GLO-90)",
+      "layers": [
+        { "name": "turkey_7.5s", "source": "glo90", "bbox": [35.5, 25.5, 42.5, 45.0],
+          "spacing_arcsec": 7.5, "quant_m": 1.0, "blend_m": 0 }
+      ]
+    },
+    {
+      "file": "ankara.tdem",
+      "description": "Ankara region 1in (Copernicus GLO-30)",
+      "layers": [
+        { "name": "ankara_1s", "source": "glo30", "bbox": [39.4, 32.0, 40.6, 33.6],
+          "spacing_arcsec": 1, "quant_m": 0.25, "blend_m": 3000 }
+      ]
+    },
+    {
+      "file": "airbases.tdem",
+      "description": "Air base detail (Copernicus GLO-30)",
+      "layers": [
+        { "name": "akinci_5m",    "source": "glo30", "center": "LTAE", "half_km": 8,
+          "spacing_m": 5,  "quant_m": 0.1,  "blend_m": 500 },
+        { "name": "incirlik_1s",  "source": "glo30", "center": "LTAG", "half_km": 20,
+          "spacing_arcsec": 1, "quant_m": 0.25, "blend_m": 3000 },
+        { "name": "incirlik_5m",  "source": "glo30", "center": "LTAG", "half_km": 6,
+          "spacing_m": 5,  "quant_m": 0.1,  "blend_m": 500 },
+        { "name": "cigli_1s",     "source": "glo30", "center": "LTBL", "half_km": 20,
+          "spacing_arcsec": 1, "quant_m": 0.25, "blend_m": 3000 },
+        { "name": "cigli_5m",     "source": "glo30", "center": "LTBL", "half_km": 6,
+          "spacing_m": 5,  "quant_m": 0.1,  "blend_m": 500 }
+      ]
+    }
+  ]
+}
