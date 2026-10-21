@@ -9,7 +9,21 @@ paketinden** (DEM) gerçek Türkiye arazisini üretmek.
 - Türkiye'nin geri kalanı **dosya boyutunu şişirmeyen** kaba çözünürlükte,
 - Toplam paket **~35–45 MB** (git'e veya Release/LFS'e sığar).
 
-> **Durum:** Planlama. Bu belge bir sonraki iş kalemlerini tanımlar; henüz kod yok.
+> **Durum (güncel):** Faz 0–4 tamamlandı.
+> - Veri + bağımsız okuma kütüphanesi: [`terrain/`](../terrain/) (`tdem`, ~40 MB paket,
+>   C++ ve C API, Python okuyucu/üretici, testler).
+> - Gerçekleşen katmanlar: Türkiye 7.5″, Ankara 1″, İncirlik/Çiğli 1″ (40 km),
+>   **Akıncı 5 m (16 km), İncirlik 5 m, Çiğli 5 m (12 km)**; pistler OurAirports
+>   geometrisiyle düzleştirildi (eşik kotları yayınlanan değerlerle 1–3 m içinde).
+> - AfterAction: quadtree LOD arazi (`src/terrain/TerrainSystem`), pist çizimleri,
+>   AGL, imleç altı kot, hillshade mini harita, kayıtlarda orijin.
+> - Dünya eğriliği bilinçli olarak uygulanmadı: arazi ve izler aynı düz
+>   eşdikdörtgen projeksiyonu paylaştığı için birbirlerine göre doğrular;
+>   orijin >250 km uzağa veri gelince yeniden ortalanır.
+> - Açık kalanlar: Faz 5'te Release asset'e taşıma (şimdilik paketler doğrudan
+>   git'te), OSM taksi yolu/apron verisi, varsa kurumsal yüksek çözünürlüklü veri.
+>
+> Aşağısı orijinal plandır.
 
 ---
 

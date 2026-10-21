@@ -17,7 +17,10 @@ cmake --build build --config Release --parallel
 build\Release\afteraction.exe --demo
 ```
 
-The `--demo` flag runs a built-in scripted scenario (two jets, a missile, an AAA site, and a helicopter) so you can evaluate the tool without any external data source.
+The `--demo` flag runs a built-in scripted scenario at **Akıncı Air Base (LTAE)** —
+a jet taking off from runway 03, two more jets, a missile shot, an air-defence
+site, a helicopter and a convoy following the real terrain — so you can evaluate
+the tool without any external data source.
 
 ---
 
@@ -208,17 +211,42 @@ python scripts/test_sender.py --host 127.0.0.1 --port 22522 --hz 10
 
 ---
 
+## Terrain
+
+AfterAction renders **real terrain for all of Turkey** from the height packs in
+[`terrain/`](terrain/) (copied next to the executable at build time):
+
+| Area | Grid |
+|---|---|
+| All of Turkey | 7.5″ (~180–230 m) |
+| Ankara region (Esenboğa, Etimesgut, Güvercinlik) | 1″ (~24–31 m) |
+| İncirlik and İzmir Çiğli surroundings (40 km) | 1″ |
+| **Akıncı** (16 km), **İncirlik**, **Çiğli** (12 km) | **5 m** |
+
+- Heights are metres **MSL**, the same reference as the protocol's `alt`, so the
+  inspector shows **AGL** directly. Runways are levelled and drawn with markings.
+- The scene starts at the **home position** (Akıncı by default; *View → Set home*
+  or *Settings → Terrain*). Live data re-centres the scene only when it arrives
+  more than 250 km away. Recordings remember their origin.
+- *View → Terrain*: tactical grid, shaded, shaded + grid, or contour lines.
+  *Vertical scale* stretches terrain **and** tracks together.
+- The top bar shows the latitude/longitude/elevation under the mouse; the
+  minimap is a hillshade of the area around the tracks (click to look there).
+
+The terrain library (`tdem`) and its data are self-contained and reusable in
+other projects — see [`terrain/README.md`](terrain/README.md).
+
+---
+
 ## Adding 3D Models
 
 The app ships with coloured procedural shapes as built-in defaults. To load proper models:
 
 1. Drop an **FBX**, **OBJ**, or **glTF/GLB** file into `assets/models/`
-2. Add two lines to `Application::init_assets()` in [`src/app/Application.cpp`](src/app/Application.cpp):
-
-```cpp
-assets_.load("jet", "assets/models/jet.glb", 0.01f);  // 0.01 if model is in cm
-assets_.map_type(net::TYPE_JET, "jet");
-```
+2. Bind it to an entity type in **Settings → Models** (applies live; *Save
+   manifest* writes `assets/models.yaml`), or edit `assets/models.yaml` directly.
+   Preview scale/rotation with the `hangar` tool. Details:
+   [`docs/ROADMAP_MODELS.md`](docs/ROADMAP_MODELS.md).
 
 ### Free model sources
 
@@ -234,14 +262,17 @@ assets_.map_type(net::TYPE_JET, "jet");
 
 | Input | Action |
 |---|---|
-| **Mouse drag** | Orbit camera |
+| **Left click** | Select track (double-click in the list = focus) |
+| **Right drag** | Orbit camera |
+| **Middle drag** / **WASD** | Pan (Shift = faster) |
 | **Mouse wheel** | Zoom |
 | **Space** | Play / Pause |
 | **1** | Slow motion (×0.25) |
 | **2** | Real-time (×1) |
 | **3** | Fast-forward (×4) |
 | **4** | Rewind (×−1) |
-| **F** | Follow / unfollow selected entity |
+| **F** | Focus / unfocus selected track |
+| **G** | Chase camera on selected track |
 | **R** | Toggle Line / Ribbon trail mode |
 | **Esc** | Quit |
 
@@ -257,6 +288,9 @@ afteraction.exe [options]
   --addr  IP        Bind address   (default 0.0.0.0)
   --width  N        Window width   (default 1600)
   --height N        Window height  (default 900)
+  --terrain DIR     Terrain packs  (default <exe dir>/terrain)
+  --open FILE       Open a .aar recording or .csv log at startup
+                    (a bare file argument works too, e.g. from the shell)
 ```
 
 ---
@@ -264,10 +298,12 @@ afteraction.exe [options]
 ## Features
 
 - **Live 3D rendering** — entities rendered with custom models or built-in shapes
+- **Real terrain** — Turkey-wide DEM with 5 m detail at Akıncı, İncirlik and Çiğli; runway overlays, contours, AGL
+- **Inspector** — position (DMS), MSL / AGL / ground elevation, speed, vertical speed, heading / pitch / roll
 - **Smooth interpolation** — cubic Hermite splines between telemetry keyframes; fluid at 60 FPS even with 5–10 Hz update rates
 - **Trails** — line or camera-facing ribbon mode
 - **VCR playback** — play, pause, fast-forward (×0.25 to ×8), rewind, scrub
-- **Timeline** — ImPlot-powered scrubber with altitude chart for the selected entity
+- **Timeline** — scrubber plus altitude / speed chart with the terrain profile under the selected track
 - **Dashcam buffer** — "Save Last N Seconds" saves a rolling window to disk instantly
 - **Custom binary format** (`.aar`) — sparse-indexed for O(log N) seek
 - **CSV import** — flexible column-mapping for importing logs from flight sims or DCS
@@ -279,12 +315,13 @@ afteraction.exe [options]
 
 ```
 UDP Recv Thread ──SPSC queue──► Main Thread
-                                 ├─ lat/lon → ENU conversion
+                                 ├─ lat/lon → world (GeoFrame, shared with terrain)
                                  ├─ Euler → quaternion
                                  ├─ Flecs ECS (interpolation + trail systems)
                                  ├─ TelemetryStore (dashcam ring buffer)
                                  ├─ Recorder (async disk I/O thread)
                                  └─ Raylib + ImGui render loop
+Terrain workers ──meshes──────►  TerrainSystem (quadtree LOD from tdem packs)
 ```
 
 **Stack:** C++23 · CMake · [Raylib](https://raylib.com) · [Flecs 4](https://github.com/SanderMertens/flecs) · [Dear ImGui](https://github.com/ocornut/imgui) · [ImPlot](https://github.com/epezent/implot) · [Assimp](https://github.com/assimp/assimp) · [rlImGui](https://github.com/raylib-extras/rlImGui)
