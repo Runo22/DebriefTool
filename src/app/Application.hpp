@@ -13,6 +13,7 @@
 #include "../geo/GeoFrame.hpp"
 #include "../terrain/TerrainSystem.hpp"
 #include "../terrain/Airfields.hpp"
+#include "CameraController.hpp"
 #include <flecs.h>
 #include <raylib.h>
 #include <future>
@@ -78,7 +79,6 @@ private:
     void look_at(float x, float z);
     void render_ui();
     void handle_input(float dt);
-    void update_camera_state(float dt);
 
     // Called for both live and demo paths — converts EntityState to ECS.
     void apply_state_to_ecs(net::EntityState& state);
@@ -101,8 +101,6 @@ private:
     // at the new model (newly spawned entities pick it up via get_for_type).
     void repoint_entities_of_type(uint16_t type);
 
-    // Frame the camera on the first entity when it is the only active track.
-    void maybe_auto_frame();
 
     // Replay-file loaders (shared by the typed path, and the native file dialog).
     void load_session(const std::string& path);   // .aar recording
@@ -150,7 +148,7 @@ private:
     AfterActionUI          ui_;
 
     demo::DemoMode     demo_;
-    Vector3            camera_free_target_{ 0.0f, 0.0f, 0.0f };
+    CameraController   camera_ctl_;
 
     // Scene origin (WGS-84) and the real-terrain renderer built around it.
     GeoFrame      geo_;
@@ -176,9 +174,6 @@ private:
     // Set by the UI "Clear" callback; the actual wipe runs at the top of the
     // next tick() (shallow stack, outside ECS iteration / ImGui rendering).
     bool clear_requested_ = false;
-    // One-shot: frame the camera on the first entity when it's the only one, so a
-    // single incoming track is actually visible. Reset on Clear.
-    bool auto_framed_ = false;
 };
 
 } // namespace afteraction

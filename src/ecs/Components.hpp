@@ -70,10 +70,4 @@ struct Trail {
     }
 };
 
-// ── Selection ─────────────────────────────────────────────────────────────────
-struct Selected {};   // tag component — entity is currently selected in UI
-
-// ── Camera follow ─────────────────────────────────────────────────────────────
-struct CameraTarget {};  // tag — camera tracks this entity
-
 } // namespace afteraction::ecs

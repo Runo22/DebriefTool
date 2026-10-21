@@ -175,8 +175,6 @@ void Application::init_ecs() {
     world_.component<ecs::HistoryComp>();
     world_.component<ecs::RenderModel>();
     world_.component<ecs::Trail>();
-    world_.component<ecs::Selected>();
-    world_.component<ecs::CameraTarget>();
     ecs::register_systems(world_);
 }
 
@@ -214,7 +212,8 @@ void Application::init_camera() {
     camera_.up         = { 0.0f, 1.0f,   0.0f };
     camera_.fovy       = 60.0f;
     camera_.projection = CAMERA_PERSPECTIVE;
-    camera_free_target_ = { 0.0f, 1500.0f, 0.0f };
+    camera_ctl_.set_pivot({ 0.0f, 1500.0f, 0.0f });
+    camera_ctl_.set_ground([this](float x, float z) { return terrain_height_at(x, z); });
 
     // Default initial settings before loading config
     ui_.state().camera_yaw      = 0.0f;
@@ -245,7 +244,7 @@ void Application::init_terrain() {
     if (cfg_.demo_mode) {
         // Frame the airfield: the demo jet lines up on runway 03.
         set_origin(demo::DemoMode::kAnchorLat, demo::DemoMode::kAnchorLon);
-        camera_free_target_ = { -900.0f, terrain_height_at(-900.0f, 1400.0f) + 50.0f, 1400.0f };
+        camera_ctl_.set_pivot({ -900.0f, terrain_height_at(-900.0f, 1400.0f) + 50.0f, 1400.0f });
         ui_.state().camera_distance = 3500.0f;
         ui_.state().camera_pitch = 18.0f;
         ui_.state().camera_yaw = 200.0f;
@@ -321,7 +320,7 @@ void Application::init_ui_callbacks() {
     };
     cbs.on_set_home_here = [this] {
         double lat, lon;
-        geo_.to_geo(camera_free_target_.x, camera_free_target_.z, &lat, &lon);
+        geo_.to_geo(camera_ctl_.pivot().x, camera_ctl_.pivot().z, &lat, &lon);
         ui_.state().origin_lat = lat;
         ui_.state().origin_lon = lon;
     };
@@ -385,7 +384,7 @@ void Application::clear_all_entities() {
     live_states_.clear();
     ui_.state().selected_entity = {};
     origin_locked_ = false;   // the next live track may re-centre the scene
-    auto_framed_ = false;   // re-frame the next single track that arrives
+    camera_ctl_.reset_auto_frame();   // re-frame the next single track that arrives
     playback_.stop();   // return to live mode
     TraceLog(LOG_INFO, "Cleared all entities and telemetry store");
 }
@@ -565,7 +564,7 @@ void Application::tick(float dt) {
     // Sync checkbox state for trail renderer
     trails_.mode = ui_.state().ribbon_trails ? TrailMode::Ribbon : TrailMode::Line;
     
-    update_camera_state(dt);
+    camera_ctl_.update(camera_, ui_.state(), dt);
     update_scene_info();
     update_minimap();
     render();
@@ -861,43 +860,7 @@ void Application::update_ecs(float dt) {
     }
     world_.progress(dt);
 
-    maybe_auto_frame();
-
-    // Camera follow
-    world_.query<const ecs::CameraTarget, const ecs::Position>()
-        .each([&](const ecs::CameraTarget&, const ecs::Position& p) {
-            camera_.target = p.v;
-        });
-}
-
-// When the very first entity shows up and it's the ONLY active track, move the
-// free-orbit camera onto it (with a sensible distance) so it's actually visible
-// instead of off-screen at the default demo framing. One-shot; reset on Clear.
-void Application::maybe_auto_frame() {
-    if (auto_framed_) return;
-    auto& st = ui_.state();
-    if (st.camera_mode != 0) return;   // don't fight Focus/Chase modes
-
-    int active = 0;
-    Vector3 p{};
-    world_.query<const ecs::EntityMeta, const ecs::Position>()
-        .each([&](const ecs::EntityMeta& meta, const ecs::Position& pos) {
-            if (meta.active) { ++active; p = pos.v; }
-        });
-
-    if (active == 0) return;           // nothing yet — keep waiting
-    auto_framed_ = true;               // only attempt at the first appearance
-    if (active != 1) return;           // multiple arrived at once — leave default view
-
-    // Centre on the track. The entity renders at altitude-exaggerated Y, so the
-    // free-orbit target must use the same exaggerated Y to put it in the middle.
-    camera_free_target_ = { p.x, p.y * st.altitude_exaggerate, p.z };
-    st.camera_distance  = 3000.0f;
-    // Force a sane downward 3/4 view so it's framed properly regardless of the
-    // pitch saved in the user's config (a steep/inverted saved pitch otherwise
-    // made the camera look up from below the track).
-    st.camera_pitch     = 18.0f;
-    TraceLog(LOG_INFO, "Auto-framed camera on first entity (alt %.0f m)", p.y);
+    camera_ctl_.auto_frame(ui_.state(), world_);
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
@@ -1289,7 +1252,7 @@ TerrainStyle Application::terrain_style() const {
 }
 
 void Application::look_at(float x, float z) {
-    camera_free_target_ = { x, terrain_height_at(x, z) * ui_.state().altitude_exaggerate, z };
+    camera_ctl_.fly_to({ x, terrain_height_at(x, z) * ui_.state().altitude_exaggerate, z });
 }
 
 void Application::update_scene_info() {
@@ -1386,191 +1349,6 @@ void Application::update_minimap() {
 
 void Application::draw_terrain() {
     terrain_.draw(camera_, terrain_style());
-}
-
-void Application::update_camera_state(float dt) {
-    auto& state = ui_.state();
-    const bool ui_wants_mouse = ImGui::GetIO().WantCaptureMouse;
-    const bool typing = ImGui::GetIO().WantTextInput;
-    camera_.fovy = std::clamp(state.camera_fov, 20.0f, 110.0f);
-
-    // ── Scroll wheel: zoom ────────────────────────────────────────────────────
-    if (!ui_wants_mouse) {
-        float wheel = GetMouseWheelMove();
-        if (wheel != 0.0f) {
-            // Exponential zoom — faster when far, slower when close
-            state.camera_distance *= powf(0.88f, wheel);
-            state.camera_distance  = std::clamp(state.camera_distance, 30.0f, 900000.0f);
-        }
-    }
-
-    // ── RMB: orbit / rotate in Free and Focus modes ──────────────────────────
-    // In Chase mode, RMB adjusts chase yaw offset instead
-    if (!ui_wants_mouse && IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
-        Vector2 delta = GetMouseDelta();
-        // Sensitivity scales slightly with zoom so distant orbit feels right,
-        // then by the user's multiplier.
-        float sens = (0.20f + 0.05f * std::clamp(state.camera_distance / 20000.0f, 0.0f, 1.5f))
-                     * state.mouse_sensitivity;
-        // Inverted look = "grab the scene": dragging moves the world under the
-        // cursor instead of swinging the camera the opposite way.
-        float inv = state.invert_look ? -1.0f : 1.0f;
-        if (state.camera_mode == 2) {
-            // In chase mode — adjust lateral yaw offset around entity
-            state.chase_yaw_offset   += inv * delta.x * 0.3f * state.mouse_sensitivity;
-            state.chase_pitch_offset -= inv * delta.y * 0.2f * state.mouse_sensitivity;
-            state.chase_pitch_offset  = std::clamp(state.chase_pitch_offset, -30.0f, 60.0f);
-        } else {
-            state.camera_yaw   += inv * delta.x * sens;
-            state.camera_pitch -= inv * delta.y * sens;
-            state.camera_pitch  = std::clamp(state.camera_pitch, -89.0f, 89.0f);
-        }
-    }
-
-    // ── MMB: pan the camera target ───────────────────────────────────────────
-    // Feels natural in any CAD/3D tool — drag the ground plane under the cursor
-    if (!ui_wants_mouse && IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)
-        && state.camera_mode == 0) {
-        Vector2 delta = GetMouseDelta();
-        float yaw_rad = state.camera_yaw * DEG2RAD;
-        Vector3 cam_right   = { cosf(yaw_rad), 0.0f, -sinf(yaw_rad) };
-        Vector3 cam_forward = { sinf(yaw_rad), 0.0f,  cosf(yaw_rad) };
-        // Pan speed proportional to distance so it feels 1:1 with the scene
-        float pan_scale = state.camera_distance * 0.0012f;
-        camera_free_target_ = Vector3Subtract(camera_free_target_,
-            Vector3Scale(cam_right,   delta.x * pan_scale));
-        camera_free_target_ = Vector3Add(camera_free_target_,
-            Vector3Scale(cam_forward, delta.y * pan_scale));
-    }
-
-    // ── F key: toggle focus on selected entity ────────────────────────────────
-    flecs::entity sel = state.selected_entity;
-    if (!typing && IsKeyPressed(KEY_F) && sel.is_valid() && world_.is_alive(sel)) {
-        if (state.camera_mode >= 1) {
-            // Return to free orbit, pivot point on where entity was
-            state.camera_mode = 0;
-            if (sel.has<ecs::Position>())
-                camera_free_target_ = sel.get<ecs::Position>().v;
-        } else {
-            state.camera_mode = 1;
-        }
-    }
-
-    // ── G key: toggle chase cam ───────────────────────────────────────────────
-    if (!typing && IsKeyPressed(KEY_G) && sel.is_valid() && world_.is_alive(sel)) {
-        state.camera_mode = (state.camera_mode == 2) ? 0 : 2;
-        if (state.camera_mode == 2) {
-            state.chase_yaw_offset   = 0.0f;
-            state.chase_pitch_offset = 20.0f;  // default: slightly above-behind
-        }
-    }
-
-    // ── MODE 1: Focus Orbit — orbit around selected entity ────────────────────
-    if (state.camera_mode == 1 && sel.is_valid() && world_.is_alive(sel)) {
-        if (sel.has<ecs::Position>()) {
-            Vector3 ent_pos = sel.get<ecs::Position>().v;
-            ent_pos.y *= state.altitude_exaggerate;  // Also apply exaggeration to Focus orbit target
-            camera_.target  = ent_pos;
-
-            float pitch_rad = state.camera_pitch * DEG2RAD;
-            float yaw_rad   = state.camera_yaw   * DEG2RAD;
-            camera_.position = Vector3Add(ent_pos, {
-                state.camera_distance * cosf(pitch_rad) * sinf(yaw_rad),
-                state.camera_distance * sinf(pitch_rad),
-                state.camera_distance * cosf(pitch_rad) * cosf(yaw_rad)
-            });
-            camera_.up = { 0.0f, 1.0f, 0.0f };
-        }
-    }
-    // ── MODE 2: Chase Camera — fly behind entity, angled down ─────────────────
-    else if (state.camera_mode == 2 && sel.is_valid() && world_.is_alive(sel)) {
-        if (sel.has<ecs::Position>() && sel.has<ecs::Rotation>() && sel.has<ecs::Velocity>()) {
-            Vector3    ent_pos = sel.get<ecs::Position>().v;
-            Quaternion ent_rot = sel.get<ecs::Rotation>().q;
-            Vector3    ent_vel = sel.get<ecs::Velocity>().v;
-
-            // CRITICAL: Apply altitude exaggeration so camera tracks the visual model height
-            ent_pos.y *= state.altitude_exaggerate;
-
-            // Entity's local axes
-            Vector3 fwd = Vector3Normalize(Vector3RotateByQuaternion({0, 0, -1}, ent_rot));
-            Vector3 up  = Vector3Normalize(Vector3RotateByQuaternion({0, 1,  0}, ent_rot));
-            Vector3 rgt = Vector3CrossProduct(fwd, up);
-
-            // Chase distance scales with camera_distance slider
-            float base_dist = std::max(200.0f, state.camera_distance * 0.08f);
-
-            // Apply user yaw/pitch offsets (RMB drag while in chase mode)
-            float cy = state.chase_yaw_offset   * DEG2RAD;
-            float cp = state.chase_pitch_offset * DEG2RAD;
-
-            // Rotate the back-vector by user offset to allow swinging around
-            Vector3 back_dir = Vector3Negate(fwd);
-            // Yaw offset: spin around world-up
-            back_dir = Vector3RotateByQuaternion(back_dir,
-                QuaternionFromAxisAngle({0,1,0}, cy));
-            // Pitch offset: tilt up/down
-            back_dir = Vector3RotateByQuaternion(back_dir,
-                QuaternionFromAxisAngle(rgt, cp));
-
-            // Camera sits base_dist behind + elevated to give a top-down view angle
-            float height_mult = 0.45f + state.chase_pitch_offset * 0.008f;
-            Vector3 cam_offset = Vector3Add(
-                Vector3Scale(back_dir, base_dist),
-                Vector3Scale({0, 1, 0}, base_dist * height_mult)
-            );
-
-            Vector3 desired_pos = Vector3Add(ent_pos, cam_offset);
-
-            // Spring-damped smoothing — tight enough to feel responsive
-            float alpha = 1.0f - expf(-8.0f * dt);
-            camera_.position = Vector3Lerp(camera_.position, desired_pos, alpha);
-
-            // Look slightly ahead of the entity (in the direction of motion)
-            float speed = Vector3Length(ent_vel);
-            float look_ahead = std::min(speed * 1.5f, base_dist * 1.2f);
-            Vector3 look_target = Vector3Add(ent_pos, Vector3Scale(fwd, look_ahead));
-            camera_.target = Vector3Lerp(camera_.target, look_target, alpha);
-            camera_.up     = { 0.0f, 1.0f, 0.0f };
-        }
-    }
-    // ── MODE 0: Free Orbit ────────────────────────────────────────────────────
-    else {
-        float yaw_rad = state.camera_yaw * DEG2RAD;
-        Vector3 forward = { sinf(yaw_rad), 0.0f,  cosf(yaw_rad) };
-        Vector3 right   = { cosf(yaw_rad), 0.0f, -sinf(yaw_rad) };
-
-        // WASD keyboard pan — speed scales with zoom level
-        if (!typing) {
-            float pan_speed = state.camera_distance * 0.45f * dt;
-            if (IsKeyDown(KEY_LEFT_SHIFT)) pan_speed *= 4.0f;
-
-            if (IsKeyDown(KEY_W) || IsKeyDown(KEY_UP))
-                camera_free_target_ = Vector3Subtract(camera_free_target_, Vector3Scale(forward, pan_speed));
-            if (IsKeyDown(KEY_S) || IsKeyDown(KEY_DOWN))
-                camera_free_target_ = Vector3Add(camera_free_target_, Vector3Scale(forward, pan_speed));
-            if (IsKeyDown(KEY_A) || IsKeyDown(KEY_LEFT))
-                camera_free_target_ = Vector3Subtract(camera_free_target_, Vector3Scale(right, pan_speed));
-            if (IsKeyDown(KEY_D) || IsKeyDown(KEY_RIGHT))
-                camera_free_target_ = Vector3Add(camera_free_target_, Vector3Scale(right, pan_speed));
-        }
-
-        camera_.target = camera_free_target_;
-
-        float pitch_rad = state.camera_pitch * DEG2RAD;
-        camera_.position = Vector3Add(camera_.target, {
-            state.camera_distance * cosf(pitch_rad) * sinf(yaw_rad),
-            state.camera_distance * sinf(pitch_rad),
-            state.camera_distance * cosf(pitch_rad) * cosf(yaw_rad)
-        });
-        // Never let the orbit camera dip below the terrain surface — otherwise you
-        // see straight through the ground (terrain "clipping" against the near
-        // plane). Keep it a small margin above the hill it's over.
-        float ground = terrain_height_at(camera_.position.x, camera_.position.z) * state.altitude_exaggerate;
-        float min_y  = ground + std::max(5.0f, state.camera_distance * 0.02f);
-        if (camera_.position.y < min_y) camera_.position.y = min_y;
-        camera_.up = { 0.0f, 1.0f, 0.0f };
-    }
 }
 
 } // namespace afteraction

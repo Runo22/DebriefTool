@@ -155,7 +155,7 @@ if(TARGET yaml-cpp)
 endif()
 
 # ── Main executable ────────────────────────────────────────────────────────────
-file(GLOB_RECURSE AFTERACTION_SRC "src/*.cpp" "src/*.hpp")
+file(GLOB_RECURSE AFTERACTION_SRC CONFIGURE_DEPENDS "src/*.cpp" "src/*.hpp")
 
 add_executable(afteraction ${AFTERACTION_SRC})
 
