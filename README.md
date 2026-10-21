@@ -11,7 +11,7 @@ Receives spatial data over UDP, renders it in 3D, records everything, and provid
 ## Quick start (no UDP source needed)
 
 ```bat
-git clone --recurse-submodules <this-repo>
+git clone <this-repo>          :: all dependencies are vendored — works offline
 scripts\bootstrap.bat
 cmake --build build --config Release --parallel
 build\Release\afteraction.exe --demo
@@ -26,7 +26,8 @@ the tool without any external data source.
 
 ## Building
 
-First fetch submodules: `git submodule update --init --recursive`.
+All third-party libraries are vendored in [`third_party/`](third_party/README.md) —
+no submodules and no downloads, so the repository builds on an offline machine.
 
 ### Windows (primary) — CMake presets (Ninja + cl.exe, x64)
 

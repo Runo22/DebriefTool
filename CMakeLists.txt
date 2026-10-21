@@ -34,9 +34,9 @@ elseif(APPLE)
     add_compile_definitions(AFTERACTION_MACOS)
 endif()
 
-# ── Global flags — applied to ALL targets including submodules ─────────────────
+# ── Global flags — applied to ALL targets including third-party ─────────────────
 #
-#  IMPORTANT: keep this section MINIMAL and submodule-safe.
+#  IMPORTANT: keep this section MINIMAL and safe for third-party code.
 #  Strict flags (/WX, -Werror, /W4, -Wall) go on the `afteraction` target below,
 #  NOT here — otherwise Assimp/Raylib/Flecs warnings become build errors.
 #
@@ -66,6 +66,11 @@ else()
     # Suppress Clang 16+ unsafe-buffer-usage warnings in third-party C code
     add_compile_options(-Wno-unsafe-buffer-usage)
 endif()
+
+# ── Third-party sources are vendored in third_party/ (no submodules, no
+#    downloads), so the project builds on an offline machine. Make sure no
+#    dependency's CMake tries to fetch anything at configure time.
+set(FETCHCONTENT_FULLY_DISCONNECTED ON CACHE BOOL "" FORCE)
 
 # ── Third-party: Raylib ────────────────────────────────────────────────────────
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -191,7 +196,7 @@ target_link_libraries(afteraction PRIVATE
     tdem::tdem
 )
 
-# ── Strict flags for OUR code only — NOT propagated to submodules ──────────────
+# ── Strict flags for OUR code only — NOT propagated to third-party ──────────────
 if(MSVC)
     target_compile_options(afteraction PRIVATE
         /W4           # high warning level

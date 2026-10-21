@@ -1,0 +1,4 @@
+# Vendored third-party sources: track everything (the root .gitignore
+# patterns like *.cmake, build/ or *.lib must not drop library files).
+!*
+!*/
