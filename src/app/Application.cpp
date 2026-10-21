@@ -5,6 +5,7 @@
 #include <implot.h>
 #include <raymath.h>
 #include <rlgl.h>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <ctime>
@@ -26,26 +27,6 @@ namespace afteraction {
 // ─────────────────────────────────────────────────────────────────────────────
 //  Coordinate helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-// WGS84 flat-earth approximation — accurate to <1 m within 500 km of origin.
-//
-// Horizontal (East/North) is measured relative to the scene origin so the scene
-// stays near the world origin for float precision. Altitude (Up) is kept as the
-// ABSOLUTE metres-above-sea-level value, NOT relative to the first entity — this
-// way every entity reports its true altitude regardless of which one arrived
-// first (previously the first entity defined alt0, so it always read 0 m and
-// later entities read alt-relative-to-it).
-static void lat_lon_to_enu(
-    double lat, double lon, double alt,
-    double lat0, double lon0, double /*alt0*/,
-    float* x, float* y, float* z)
-{
-    constexpr double kMetPerDeg = 111319.9;
-    const double cos_lat0 = std::cos(lat0 * M_PI / 180.0);
-    *x = static_cast<float>((lon - lon0) * cos_lat0 * kMetPerDeg);  // East
-    *y = static_cast<float>(alt);                                   // Up (absolute MSL)
-    *z = -static_cast<float>((lat - lat0) * kMetPerDeg);            // -North
-}
 
 // Aviation Euler → Raylib quaternion.
 //   psi   = heading  (0=North, 90=East, clockwise)
@@ -105,6 +86,10 @@ Application::~Application() {
     // CloseWindow() has destroyed the context — so unloading there would make GL
     // calls on a dead context and crash. unload_all() is idempotent.
     assets_.unload_all();
+    if (minimap_job_.valid()) minimap_job_.wait();
+    if (minimap_tex_.id) UnloadTexture(minimap_tex_);
+    terrain_.shutdown();
+    if (label_font_.texture.id != GetFontDefault().texture.id) UnloadFont(label_font_);
     ImPlot::DestroyContext();
     rlImGuiShutdown();
     CloseWindow();
@@ -127,7 +112,55 @@ void Application::init_window() {
         UnloadImage(icon);
     }
 
-    rlImGuiSetup(true);
+    // ImGui with our own fonts: Barlow for the UI (Font Awesome icons merged in
+    // by rlImGui), JetBrains Mono for numeric read-outs.
+    rlImGuiBeginInitImGui();
+    ImGui::StyleColorsDark();
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        const std::string ui_font = asset_path("fonts/Barlow-Medium.ttf");
+        if (FileExists(ui_font.c_str())) {
+            io.Fonts->Clear();
+            ImFontConfig cfg;
+            cfg.OversampleH = 2;
+            static const ImWchar ranges[] = { 0x0020, 0x00FF, 0x0100, 0x017F, 0x2000, 0x206F, 0 };  // Latin + Turkish
+            io.Fonts->AddFontFromFileTTF(ui_font.c_str(), 16.0f, &cfg, ranges);
+        }
+    }
+    rlImGuiEndInitImGui();
+    AfterActionUI::apply_theme();
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        // Merge Font Awesome into each extra font too, so icons work everywhere.
+        const std::string icons = asset_path("fonts/fa-solid-900.ttf");
+        auto add_with_icons = [&](const std::string& path, float px) -> ImFont* {
+            if (!FileExists(path.c_str())) return nullptr;
+            static const ImWchar ranges[] = { 0x0020, 0x00FF, 0x0100, 0x017F, 0x2000, 0x206F, 0 };
+            ImFont* f = io.Fonts->AddFontFromFileTTF(path.c_str(), px, nullptr, ranges);
+            if (f && FileExists(icons.c_str())) {
+                static const ImWchar icon_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
+                ImFontConfig cfg;
+                cfg.MergeMode = true;
+                cfg.PixelSnapH = true;
+                cfg.GlyphMinAdvanceX = px;
+                io.Fonts->AddFontFromFileTTF(icons.c_str(), px * 0.85f, &cfg, icon_ranges);
+            }
+            return f;
+        };
+        ui_.set_mono_font(add_with_icons(asset_path("fonts/JetBrainsMono-Regular.ttf"), 14.0f));
+        ui_.set_heading_font(add_with_icons(asset_path("fonts/Barlow-SemiBold.ttf"), 19.0f));
+    }
+
+    // Raylib font for in-world labels (default bitmap font as a fallback).
+    const std::string lbl = asset_path("fonts/Barlow-SemiBold.ttf");
+    std::vector<int> cps;                                   // ASCII + Latin-1/Ext-A (Turkish) + dashes
+    for (int c = 0x20; c < 0x7F; ++c) cps.push_back(c);
+    for (int c = 0xA0; c < 0x180; ++c) cps.push_back(c);
+    for (int c : { 0x2013, 0x2014, 0x2022, 0x00B0 }) cps.push_back(c);
+    label_font_ = FileExists(lbl.c_str())
+        ? LoadFontEx(lbl.c_str(), 40, cps.data(), static_cast<int>(cps.size()))
+        : GetFontDefault();
+    SetTextureFilter(label_font_.texture, TEXTURE_FILTER_BILINEAR);
 
     ImPlot::CreateContext();
     ImGui::GetIO().IniFilename = nullptr; // don't write imgui.ini
@@ -176,24 +209,55 @@ void Application::init_camera() {
     // Entities in demo orbit at 3000-5500m altitude, 5-8km radius.
     // Start with a side-angle view that clearly shows altitude differences.
     camera_.position   = { 0.0f, 5000.0f, 12000.0f };
-    camera_.target     = { 0.0f, 3000.0f, 0.0f };   // look at entity centroid
+    camera_.target     = { 0.0f, 1500.0f, 0.0f };
     camera_.up         = { 0.0f, 1.0f,   0.0f };
     camera_.fovy       = 60.0f;
     camera_.projection = CAMERA_PERSPECTIVE;
-    camera_free_target_ = { 0.0f, 3000.0f, 0.0f };
+    camera_free_target_ = { 0.0f, 1500.0f, 0.0f };
 
     // Default initial settings before loading config
     ui_.state().camera_yaw      = 0.0f;
     ui_.state().camera_pitch    = 22.0f;   // angled to show height
     ui_.state().camera_distance = 12000.0f;
-    ui_.state().entity_3d_scale = 30.0f;
+    ui_.state().entity_3d_scale = 1.0f;
     ui_.state().trail_width_override = 120.0f;
-    ui_.state().terrain_mode    = 3;       // Both
-    ui_.state().altitude_exaggerate = 3.0f;  // 3x vertical exaggeration
+    ui_.state().terrain_mode    = static_cast<int>(TerrainLook::ShadedGrid);
+    ui_.state().altitude_exaggerate = 1.0f;  // real scale (terrain + tracks together)
     ui_.state().far_clip_plane  = 2000000.0f;
 
     // Load config
     ConfigManager::load_config(ui_.state(), config_path());
+}
+
+void Application::init_terrain() {
+    const std::string dir = cfg_.terrain_dir.empty() ? app_dir() + "terrain" : cfg_.terrain_dir;
+    terrain_.load_data(dir);
+    terrain_.init_gpu();
+    const size_t nrw = airfields_.load_csv(dir + "/runways_tr.csv");
+    TraceLog(LOG_INFO, "Airfields: %zu runways", nrw);
+    // Start at the configured home origin (Akıncı by default) so terrain is
+    // visible before any data arrives; live data re-centres only if far away.
+    set_origin(ui_.state().origin_lat, ui_.state().origin_lon);
+    demo_.set_height_fn([this](double lat, double lon) {
+        return terrain_.height_at_geo(lat, lon).value_or(0.0f);
+    });
+    if (cfg_.demo_mode) {
+        // Frame the airfield: the demo jet lines up on runway 03.
+        set_origin(demo::DemoMode::kAnchorLat, demo::DemoMode::kAnchorLon);
+        camera_free_target_ = { -900.0f, terrain_height_at(-900.0f, 1400.0f) + 50.0f, 1400.0f };
+        ui_.state().camera_distance = 3500.0f;
+        ui_.state().camera_pitch = 18.0f;
+        ui_.state().camera_yaw = 200.0f;
+    }
+}
+
+void Application::set_origin(double lat, double lon) {
+    geo_.set(lat, lon);
+    terrain_.set_frame(geo_);
+    airfields_.rebuild(geo_, terrain_);
+    ui_.state().scene_lat = lat;
+    ui_.state().scene_lon = lon;
+    TraceLog(LOG_INFO, "Scene origin %.5f, %.5f", lat, lon);
 }
 
 void Application::init_ui_callbacks() {
@@ -204,7 +268,10 @@ void Application::init_ui_callbacks() {
         tm* lt   = localtime(&t);
         strftime(name, sizeof(name), "session_%Y%m%d_%H%M%S.aar", lt);
         std::string path = recordings_dir() + name;   // <app_dir>/recordings/
-        recorder_.start(path, name);
+        persist::SceneOrigin origin{};
+        origin.lat_deg = geo_.lat0();
+        origin.lon_deg = geo_.lon0();
+        recorder_.start(path, name, origin);
         TraceLog(LOG_INFO, "Recording to %s", path.c_str());
     };
     cbs.on_record_stop = [this] { recorder_.stop(); };
@@ -214,7 +281,10 @@ void Application::init_ui_callbacks() {
         tm* lt   = localtime(&t);
         strftime(name, sizeof(name), "dashcam_%Y%m%d_%H%M%S.aar", lt);
         std::string path = recordings_dir() + name;   // <app_dir>/recordings/
-        persist::Recorder::export_slice(store_, secs, path, "dashcam");
+        persist::SceneOrigin origin{};
+        origin.lat_deg = geo_.lat0();
+        origin.lon_deg = geo_.lon0();
+        persist::Recorder::export_slice(store_, secs, path, "dashcam", origin);
         TraceLog(LOG_INFO, "Saved dashcam to %s", path.c_str());
     };
     cbs.on_load_file   = [this](std::string path) { load_session(path); };
@@ -240,6 +310,26 @@ void Application::init_ui_callbacks() {
         assets_.unmap_type(type);
         repoint_entities_of_type(type);   // back to the procedural shape
     };
+    cbs.on_go_home = [this] {
+        const auto& st = ui_.state();
+        if (GeoFrame::distance_m(geo_.lat0(), geo_.lon0(), st.origin_lat, st.origin_lon) > 250000.0)
+            set_origin(st.origin_lat, st.origin_lon);
+        const Vector3 p = geo_.to_world(st.origin_lat, st.origin_lon, 0.0);
+        ui_.state().camera_mode = 0;
+        look_at(p.x, p.z);
+    };
+    cbs.on_set_home_here = [this] {
+        double lat, lon;
+        geo_.to_geo(camera_free_target_.x, camera_free_target_.z, &lat, &lon);
+        ui_.state().origin_lat = lat;
+        ui_.state().origin_lon = lon;
+    };
+    cbs.on_look_at = [this](float x, float z) {
+        ui_.state().camera_mode = 0;
+        look_at(x, z);
+    };
+    cbs.to_geo = [this](float x, float z, double* lat, double* lon) { geo_.to_geo(x, z, lat, lon); };
+    cbs.ground_height = [this](float x, float z) { return terrain_.height_at(x, z); };
     cbs.on_models_save = [this](const std::vector<ModelBindRequest>& reqs) {
         std::vector<ModelSpec> specs;
         for (const auto& r : reqs) {
@@ -273,7 +363,7 @@ void Application::clear_all_entities() {
     store_.clear();
     live_states_.clear();
     ui_.state().selected_entity = {};
-    origin_set_ = false;
+    origin_locked_ = false;   // the next live track may re-centre the scene
     auto_framed_ = false;   // re-frame the next single track that arrives
     playback_.stop();   // return to live mode
     TraceLog(LOG_INFO, "Cleared all entities and telemetry store");
@@ -281,8 +371,17 @@ void Application::clear_all_entities() {
 
 // ── Replay-file loading (typed path + native dialog share these) ──────────────
 void Application::load_session(const std::string& path) {
-    store_.clear();
-    persist::Recorder::load_into(path, store_);
+    clear_all_entities();
+    persist::SceneOrigin origin{};
+    if (!persist::Recorder::load_into(path, store_, &origin)) {
+        TraceLog(LOG_WARNING, "Could not load session %s", path.c_str());
+        return;
+    }
+    // Recordings store positions relative to the origin they were made at.
+    if (origin.lat_deg != 0.0 || origin.lon_deg != 0.0) {
+        set_origin(origin.lat_deg, origin.lon_deg);
+        origin_locked_ = true;
+    }
     auto [ts, te] = store_.time_range_ns();
     playback_.seek(ts);
     playback_.pause();
@@ -321,7 +420,7 @@ void Application::import_csv(const std::string& path) {
             return a.timestamp_ns < b.timestamp_ns;
         });
 
-    store_.clear();
+    clear_all_entities();
     std::vector<net::EntityState> frame;
     uint64_t frame_ts = states.front().timestamp_ns;
     auto flush = [&] {
@@ -389,10 +488,18 @@ void Application::run() {
     init_ecs();
     init_assets();
     init_camera();
+    init_terrain();
     init_ui_callbacks();
 
     if (!cfg_.demo_mode)
         udp_receiver_.start(cfg_.bind_addr, cfg_.udp_port);
+
+    if (!cfg_.open_file.empty()) {
+        std::string ext = std::filesystem::path(cfg_.open_file).extension().string();
+        for (auto& c : ext) c = static_cast<char>(tolower(static_cast<unsigned char>(c)));
+        if (ext == ".csv") import_csv(cfg_.open_file);
+        else               load_session(cfg_.open_file);
+    }
 
     while (!WindowShouldClose() && running_) {
         const float dt = GetFrameTime();
@@ -422,22 +529,26 @@ void Application::tick(float dt) {
     trails_.mode = ui_.state().ribbon_trails ? TrailMode::Ribbon : TrailMode::Line;
     
     update_camera_state(dt);
+    update_scene_info();
+    update_minimap();
     render();
 }
 
 // ── Coordinate + orientation conversion ──────────────────────────────────────
-void Application::ensure_origin_and_convert(net::EntityState& state, bool enu_already) {
-    if (!enu_already) {
-        if (!origin_set_) {
-            origin_lat_ = state.lat_deg;
-            origin_lon_ = state.lon_deg;
-            origin_alt_ = state.alt_m;
-            origin_set_ = true;
-        }
-        lat_lon_to_enu(state.lat_deg, state.lon_deg, state.alt_m,
-                       origin_lat_,  origin_lon_,  origin_alt_,
-                       &state.position[0], &state.position[1], &state.position[2]);
+void Application::ensure_origin_and_convert(net::EntityState& state) {
+    if (!origin_locked_) {
+        origin_locked_ = true;
+        // Keep the current origin (and its already-built terrain) unless the data
+        // is far away from it — beyond that the flat projection would distort.
+        constexpr double kRecentreM = 250000.0;
+        if (!geo_.valid() ||
+            GeoFrame::distance_m(geo_.lat0(), geo_.lon0(), state.lat_deg, state.lon_deg) > kRecentreM)
+            set_origin(state.lat_deg, state.lon_deg);
     }
+    const Vector3 p = geo_.to_world(state.lat_deg, state.lon_deg, state.alt_m);
+    state.position[0] = p.x;
+    state.position[1] = p.y;
+    state.position[2] = p.z;
 
     // Build quaternion from Euler angles (always, even for demo states)
     Quaternion q = euler_to_quat(state.phi_deg, state.theta_deg, state.psi_deg);
@@ -468,7 +579,7 @@ void Application::process_inbound_queue() {
         // live_states_, so pre-CLEAR frames in this batch are correctly dropped.)
         if (frame->clear_all) { clear_all_entities(); continue; }
         for (auto& es : frame->entities) {
-            ensure_origin_and_convert(es, false);
+            ensure_origin_and_convert(es);
             apply_state_to_ecs(es);
             live_states_.push_back(es);
         }
@@ -478,19 +589,18 @@ void Application::process_inbound_queue() {
         uint64_t ts = live_states_.back().timestamp_ns;
         store_.ingest(ts, live_states_);
         world_.set<ecs::InterpolationCtx>({ts, true});
+        if (recorder_.is_recording())
+            recorder_.submit(ts, 0, live_states_);
     }
 }
 
 // ── Demo data injection ───────────────────────────────────────────────────────
 void Application::process_demo(float dt) {
     if (!playback_.is_live()) return;
-    origin_set_ = true; // ENU origin is (0,0,0) in demo
 
-    auto states = demo_.tick(dt);
-    live_states_ = states;
-
+    live_states_ = demo_.tick(dt);
     for (auto& es : live_states_) {
-        ensure_origin_and_convert(es, true); // positions already ENU
+        ensure_origin_and_convert(es);
         apply_state_to_ecs(es);
     }
 
@@ -587,7 +697,7 @@ void Application::sync_ecs_to_playback(uint64_t target_ns) {
         uint32_t source_id = static_cast<uint32_t>(key >> 32);
         uint32_t entity_id = static_cast<uint32_t>(key & 0xFFFFFFFF);
 
-        const std::vector<net::EntityState>* hist = store_.get_entity_history(source_id, entity_id);
+        const auto* hist = store_.get_entity_history(source_id, entity_id);
         if (!hist || hist->empty()) continue;
 
         // Find floor and ceiling brackets
@@ -744,7 +854,7 @@ void Application::maybe_auto_frame() {
     // Centre on the track. The entity renders at altitude-exaggerated Y, so the
     // free-orbit target must use the same exaggerated Y to put it in the middle.
     camera_free_target_ = { p.x, p.y * st.altitude_exaggerate, p.z };
-    st.camera_distance  = std::clamp(st.entity_3d_scale * 90.0f, 1500.0f, 7000.0f);
+    st.camera_distance  = 3000.0f;
     // Force a sane downward 3/4 view so it's framed properly regardless of the
     // pitch saved in the user's config (a steep/inverted saved pitch otherwise
     // made the camera look up from below the track).
@@ -755,19 +865,31 @@ void Application::maybe_auto_frame() {
 // ── Rendering ─────────────────────────────────────────────────────────────────
 // Atmospheric palette — the horizon colour is reused as the fog target so
 // distant terrain dissolves into the sky instead of hard-cutting.
-static constexpr Color kSkyZenith  = {  8, 12, 22, 255 };  // deep space, top of screen
-static constexpr Color kSkyHorizon = { 32, 44, 62, 255 };  // hazy blue-grey at the horizon
+static constexpr Color kSkyZenith  = { 10, 16, 28, 255 };  // deep blue, top of screen
+static constexpr Color kSkyHorizon = { 74, 90, 110, 255 };  // haze at the horizon (= fog)
 
 void Application::render() {
     BeginDrawing();
     // ClearBackground also clears the depth buffer; the gradient then paints
     // over the colour buffer to give a sky/horizon backdrop with real depth.
     ClearBackground(kSkyHorizon);
-    DrawRectangleGradientV(0, 0, GetScreenWidth(), GetScreenHeight(),
-                           kSkyZenith, kSkyHorizon);
+    // Sky: zenith colour fading to haze exactly at the screen-space horizon
+    // (a far point straight ahead at camera height), haze below it.
+    {
+        const int sw = GetScreenWidth(), sh = GetScreenHeight();
+        Vector3 fwd = Vector3Subtract(camera_.target, camera_.position);
+        fwd.y = 0.0f;
+        int hy = sh / 2;
+        if (Vector3Length(fwd) > 1e-3f) {
+            fwd = Vector3Normalize(fwd);
+            const Vector3 far = Vector3Add(camera_.position, Vector3Scale(fwd, 1.0e6f));
+            hy = static_cast<int>(GetWorldToScreen(far, camera_).y);
+        }
+        hy = std::clamp(hy, 0, 4 * sh);
+        if (hy > 0) DrawRectangleGradientV(0, 0, sw, hy, kSkyZenith, kSkyHorizon);
+    }
     render_3d();
     render_ui();
-    DrawFPS(GetScreenWidth() - 80, 4);
     EndDrawing();
 }
 
@@ -782,32 +904,43 @@ void Application::render_3d() {
     // preferred cam_dist*6, clamp(x, lo, hi) with lo>hi would be UB. Here far is
     // cam_dist*6 capped by the user's setting, then floored so the near-plane
     // math stays valid even at extreme zoom-in.
-    const float cam_dist   = ui_.state().camera_distance;
-    float far_plane  = std::min(cam_dist * 6.0f, ui_.state().far_clip_plane);
-    far_plane        = std::max(far_plane, 1000.0f);
-    const float near_plane = std::clamp(far_plane / 5000.0f, 0.3f, 500.0f);
+    const float cam_dist = ui_.state().camera_distance;
+    const TerrainStyle tstyle = terrain_style();
+    terrain_.update(camera_, tstyle);
+
+    // The far plane reaches just past the fog (beyond it everything is sky
+    // colour anyway), capped by the user's setting. Depth precision depends on
+    // FAR/NEAR, so the near plane scales with it.
+    float far_plane = std::min(tstyle.fog_end * 1.05f, ui_.state().far_clip_plane);
+    far_plane       = std::max(far_plane, 2000.0f);
+    const float near_plane = std::clamp(far_plane / 20000.0f, 0.5f, 2000.0f);
     rlSetClipPlanes(near_plane, far_plane);
     BeginMode3D(camera_);
 
     const float exag = ui_.state().altitude_exaggerate;
 
-    // Helper: apply altitude exaggeration to a world-space position
+    // Helper: apply the vertical scale to a world-space position
     auto exag_pos = [&](Vector3 p) -> Vector3 {
         return { p.x, p.y * exag, p.z };
     };
 
-    // 1. Terrain (drawn at real scale — it's already near ground level)
-    if (ui_.state().terrain_mode > 0) {
+    // 1. Terrain (real DEM). Without data — or with terrain hidden — fall back
+    //    to a tactical grid at sea level.
+    if (ui_.state().terrain_mode > 0 && terrain_.has_data()) {
         draw_terrain();
+        airfields_.draw(camera_, exag, std::min(far_plane, 80000.0f));
     } else {
-        // Fallback tactical grid
+        const float step = tstyle.grid_spacing;
+        const float half = step * 50.0f;
+        const float cx = roundf(camera_.position.x / step) * step;
+        const float cz = roundf(camera_.position.z / step) * step;
         rlBegin(RL_LINES);
         rlColor4ub(0, 80, 150, 50);
-        for (int i = -50; i <= 50; i += 5) {
-            rlVertex3f((float)i * 1000.f, 0.f, -50000.f);
-            rlVertex3f((float)i * 1000.f, 0.f,  50000.f);
-            rlVertex3f(-50000.f, 0.f, (float)i * 1000.f);
-            rlVertex3f( 50000.f, 0.f, (float)i * 1000.f);
+        for (int i = -50; i <= 50; ++i) {
+            rlVertex3f(cx + i * step, 0.f, cz - half);
+            rlVertex3f(cx + i * step, 0.f, cz + half);
+            rlVertex3f(cx - half, 0.f, cz + i * step);
+            rlVertex3f(cx + half, 0.f, cz + i * step);
         }
         rlEnd();
     }
@@ -838,7 +971,8 @@ void Application::render_3d() {
             float angle_rad = 0.0f;
             QuaternionToAxisAngle(q, &axis, &angle_rad);
 
-            float final_scale = rm.scale * ui_.state().entity_3d_scale;
+            const float ds = display_scale(rp);
+            float final_scale = rm.scale * ds;
             if (rm.model_ptr) {
                 DrawModelEx(*rm.model_ptr, rp,
                             axis, angle_rad * RAD2DEG,
@@ -848,14 +982,14 @@ void Application::render_3d() {
                                  {final_scale, final_scale, final_scale},
                                  ColorAlpha(rm.tint, 0.35f));
             } else {
-                float sz = 60.0f * ui_.state().entity_3d_scale;
+                float sz = 6.0f * ds;
                 DrawCylinder(rp, 0.0f, sz, sz * 1.5f, 4, {0, 220, 255, 255});
                 DrawCylinderWires(rp, 0.0f, sz, sz * 1.5f, 4, {200, 240, 255, 200});
             }
 
             // Ground height directly beneath this entity (so markers/drop-lines
             // track terrain relief instead of sinking into hills).
-            const float gh = terrain_height_at(rp.x, rp.z);
+            const float gh = terrain_height_at(rp.x, rp.z) * exag;
 
             // Selection highlight (using exaggerated position rp).
             // Deliberately does NOT draw a wire sphere around the model — that
@@ -863,30 +997,29 @@ void Application::render_3d() {
             // floating chevron above the entity plus ground rings on the terrain,
             // both of which leave the model fully visible.
             if (ui_.state().selected_entity == e) {
-                float sc    = ui_.state().entity_3d_scale;
-                float mk    = std::max(60.0f, 180.0f * sc * 0.05f);   // marker size
+                float mk    = 12.0f * ds;   // marker size follows the on-screen model size
 
                 // Floating chevron (diamond) hovering above the model.
                 float bob  = sinf((float)GetTime() * 3.0f) * mk * 0.3f;
                 Vector3 dp = {rp.x, rp.y + mk * 2.5f + bob, rp.z};
-                float ds   = mk * 0.6f;
-                DrawCylinderWires(dp, 0.f, ds, ds*1.4f, 4, YELLOW);
-                DrawCylinderWires({dp.x, dp.y - ds*1.4f, dp.z}, ds, 0.f, ds*1.4f, 4, YELLOW);
+                float chev = mk * 0.6f;
+                DrawCylinderWires(dp, 0.f, chev, chev*1.4f, 4, YELLOW);
+                DrawCylinderWires({dp.x, dp.y - chev*1.4f, dp.z}, chev, 0.f, chev*1.4f, 4, YELLOW);
 
                 // Bright vertical tie-line from the chevron down to the terrain.
                 DrawLine3D({rp.x, gh, rp.z}, dp, {255, 220, 0, 130});
 
                 // Ground rings that FOLLOW the terrain relief (a flat circle was
                 // half-buried on slopes).
-                draw_ground_ring(rp.x, rp.z, 600.f,  {255,220,0,160});
-                draw_ground_ring(rp.x, rp.z, 1200.f, {255,220,0,80});
-                draw_ground_ring(rp.x, rp.z, 2400.f, {255,220,0,35});
+                draw_ground_ring(rp.x, rp.z, 25.f * ds,  {255,220,0,160});
+                draw_ground_ring(rp.x, rp.z, 50.f * ds,  {255,220,0,80});
+                draw_ground_ring(rp.x, rp.z, 100.f * ds, {255,220,0,35});
             }
 
             // Altitude drop line from the terrain up to the entity position.
             if (rp.y - gh > 10.0f) {
                 DrawLine3D({rp.x, gh, rp.z}, rp, {0, 190, 255, 160});
-                float sr = std::max(50.f, (pos.v.y - gh) * 0.03f);
+                float sr = std::max(50.f, (rp.y - gh) * 0.03f);
                 draw_ground_ring(rp.x, rp.z, sr, {0, 190, 255, 100});
             }
 
@@ -909,6 +1042,9 @@ void Application::render_3d() {
 
     EndMode3D();
     rlSetClipPlanes(0.01f, 1000.0f);
+
+    if (ui_.state().terrain_mode > 0 && ui_.state().show_labels)
+        airfields_.draw_labels(camera_, exag, label_font_);
 
     // Screen-space labels (using exaggerated Y for GetWorldToScreen)
     if (ui_.state().show_labels) {
@@ -947,12 +1083,12 @@ void Application::render_3d() {
                 const char* alt = (alt_ft > 50) ? TextFormat("%d ft (%d m)", alt_ft, alt_m)
                                                 : nullptr;
 
-                const int fs = 15, afs = 12;
+                const float fs = 17.0f, afs = 14.0f;
                 int tx = (int)sp.x + 9, ty = (int)sp.y - 8;
-                int wlbl = MeasureText(lbl, fs);
-                int walt = alt ? MeasureText(alt, afs) : 0;
+                int wlbl = (int)MeasureTextEx(label_font_, lbl, fs, 0.5f).x;
+                int walt = alt ? (int)MeasureTextEx(label_font_, alt, afs, 0.5f).x : 0;
                 int w = std::max(wlbl, walt);
-                int h = fs + (alt ? afs + 2 : 0);
+                int h = (int)(fs + (alt ? afs : 0.0f));
 
                 // Background plate keeps text legible over bright/busy terrain.
                 DrawRectangle(tx - 4, ty - 3, w + 8, h + 6,
@@ -961,20 +1097,22 @@ void Application::render_3d() {
                               sel ? Color{ 255, 220, 0, a }
                                   : Color{ 40, 90, 120, (unsigned char)(a * 0.7f) });
 
-                DrawText(lbl, tx, ty, fs,
-                         sel ? Color{ 255, 220, 0, a } : Color{ 200, 228, 255, a });
+                DrawTextEx(label_font_, lbl, { (float)tx, (float)ty }, fs, 0.5f,
+                           sel ? Color{ 255, 220, 0, a } : Color{ 220, 236, 255, a });
                 if (alt)
-                    DrawText(alt, tx, ty + fs + 2, afs,
-                             { 0, 200, 255, (unsigned char)(a * 0.85f) });
+                    DrawTextEx(label_font_, alt, { (float)tx, (float)ty + fs }, afs, 0.5f,
+                               { 120, 210, 255, (unsigned char)(a * 0.9f) });
             });
     }
 
     if (cfg_.demo_mode) {
         // Below the toolbar row so it never overlaps the transport buttons.
-        int bw = 340, bh = 26, bx = GetScreenWidth()/2 - 170, by = 44;
+        int bw = 440, bh = 28, bx = GetScreenWidth()/2 - 220,
+            by = static_cast<int>(AfterActionUI::kTopBarHeight) + 8;
         DrawRectangle(bx, by, bw, bh, {0,0,0,160});
         DrawRectangleLines(bx, by, bw, bh, {255,180,0,100});
-        DrawText("DEMO MODE  \xe2\x80\x94  Live UDP Disabled", bx+10, by+5, 15, {255,200,0,230});
+        DrawTextEx(label_font_, "DEMO  \xe2\x80\x94  scripted scenario at Ak\xc4\xb1nc\xc4\xb1 (live UDP off)",
+                   { (float)bx + 10, (float)by + 4 }, 17.0f, 0.5f, {255,200,0,230});
     }
 }
 
@@ -1019,7 +1157,7 @@ void Application::handle_input(float /*dt*/) {
                 // Hit-test against the RENDERED position (altitude exaggeration
                 // applied) — otherwise clicks miss whenever exaggeration > 1.
                 Vector3 rp = { pos.v.x, pos.v.y * exag, pos.v.z };
-                float pick_r = ui_.state().entity_3d_scale * 30.0f;
+                float pick_r = 30.0f * display_scale(rp);
                 Vector3 to_center = Vector3Subtract(rp, ray.position);
                 float t = Vector3DotProduct(to_center, ray.direction);
                 if (t < 0) return;
@@ -1039,14 +1177,16 @@ void Application::handle_input(float /*dt*/) {
     }
 }
 
+// Models are drawn at true size up close and grow with distance so a track
+// stays readable from far away (the "Size" slider sets how much).
+float Application::display_scale(Vector3 render_pos) const {
+    const float d = Vector3Distance(render_pos, camera_.position);
+    return std::max(1.0f, ui_.state().entity_3d_scale * d / 400.0f);
+}
+
 float Application::terrain_height_at(float wx, float wz) const {
-    const auto& state = ui_.state();
-    if (state.terrain_mode == 0) return 0.0f;
-    float h = 800.0f * sinf(wx * 0.00006f) * cosf(wz * 0.00006f)
-            + 350.0f * sinf(wx * 0.00015f + 0.8f) * sinf(wz * 0.00012f + 1.2f)
-            + 120.0f * cosf(wx * 0.0004f + 2.0f)  * cosf(wz * 0.0003f)
-            +  40.0f * sinf(wx * 0.001f)           * sinf(wz * 0.001f);
-    return h * state.terrain_height_scale;
+    if (ui_.state().terrain_mode == 0) return 0.0f;
+    return terrain_.height_at(wx, wz);
 }
 
 // A horizontal ground ring that hugs the terrain: each vertex is lifted to the
@@ -1056,7 +1196,8 @@ void Application::draw_ground_ring(float cx, float cz, float radius, Color col) 
     // More segments so the polyline hugs the relief closely, and a lift that
     // scales with radius so the chord between samples doesn't dip into a hill.
     const int   segs = std::clamp(static_cast<int>(radius / 40.0f), 48, 160);
-    const float lift = std::max(15.0f, radius * 0.02f);
+    const float exag = ui_.state().altitude_exaggerate;
+    const float lift = std::max(3.0f, radius * 0.01f);
     // Draw with depth-test OFF so the marker is never hidden behind a hill — a
     // selection ring you can only half-see is worse than one drawn on top.
     rlDrawRenderBatchActive();   // flush queued 3D so the state change is clean
@@ -1066,7 +1207,7 @@ void Application::draw_ground_ring(float cx, float cz, float radius, Color col) 
         float a = (float)i / segs * 2.0f * PI;
         float x = cx + cosf(a) * radius;
         float z = cz + sinf(a) * radius;
-        Vector3 cur{ x, terrain_height_at(x, z) + lift, z };
+        Vector3 cur{ x, terrain_height_at(x, z) * exag + lift, z };
         if (i > 0) DrawLine3D(prev, cur, col);
         prev = cur;
     }
@@ -1074,159 +1215,130 @@ void Application::draw_ground_ring(float cx, float cz, float radius, Color col) 
     rlEnableDepthTest();
 }
 
+TerrainStyle Application::terrain_style() const {
+    const auto& st = ui_.state();
+    TerrainStyle s;
+    s.look   = static_cast<TerrainLook>(std::clamp(st.terrain_mode, 0, 4));
+    s.vscale = st.altitude_exaggerate;
+    s.detail = st.terrain_detail;
+    s.fog    = kSkyHorizon;
+
+    // Fog follows the zoom (and the camera's height, which widens the horizon).
+    const float cam_dist = st.camera_distance;
+    const float cam_agl  = std::max(0.0f, camera_.position.y
+                                         - terrain_height_at(camera_.position.x, camera_.position.z) * s.vscale);
+    s.fog_end   = std::clamp(cam_dist * 7.0f + cam_agl * 12.0f, 25000.0f, 1200000.0f);
+    s.fog_start = s.fog_end * 0.30f;
+
+    // Grid every 10^n m, about a quarter of the view distance; contours at a
+    // "nice" interval giving roughly 100 lines across the view.
+    s.grid_spacing = std::pow(10.0f, std::floor(std::log10(std::max(cam_dist * 0.3f, 10.0f))));
+    const float raw = cam_dist / 120.0f;
+    float step = 10.0f;
+    for (float c : {10.0f, 20.0f, 50.0f, 100.0f, 200.0f, 500.0f, 1000.0f})
+        if (c <= raw) step = c;
+    s.contour_step = step;
+    return s;
+}
+
+void Application::look_at(float x, float z) {
+    camera_free_target_ = { x, terrain_height_at(x, z) * ui_.state().altitude_exaggerate, z };
+}
+
+void Application::update_scene_info() {
+    SceneInfo& sc = ui_.state().scene;
+    sc.demo = cfg_.demo_mode;
+    sc.fps = GetFPS();
+    sc.origin_lat = geo_.lat0();
+    sc.origin_lon = geo_.lon0();
+
+    // Terrain under the mouse (skip while the mouse is over a panel).
+    sc.cursor_valid = false;
+    if (!ImGui::GetIO().WantCaptureMouse && terrain_.has_data() && ui_.state().terrain_mode > 0) {
+        const float exag = ui_.state().altitude_exaggerate;
+        Vector3 hit;
+        if (terrain_.raycast(GetMouseRay(GetMousePosition(), camera_), exag, 400000.0f, &hit)) {
+            sc.cursor_valid = true;
+            geo_.to_geo(hit.x, hit.z, &sc.cursor_lat, &sc.cursor_lon);
+            sc.cursor_elev = terrain_.height_at(hit.x, hit.z);
+            sc.cursor_res = terrain_.resolution_at(hit.x, hit.z);
+        }
+    }
+
+    const TerrainStats ts = terrain_.stats();
+    sc.chunks_drawn = ts.drawn;
+    sc.chunks_cached = ts.cached;
+    sc.chunks_queued = ts.queued;
+    sc.terrain_gpu_mb = ts.gpu_mb;
+    if (sc.terrain_layers.empty()) {
+        sc.terrain_status = terrain_.status();
+        for (const auto& L : terrain_.db().layers()) {
+            char buf[96];
+            snprintf(buf, sizeof(buf), "%-13s %6.1f m  %.2f-%.2fN %.2f-%.2fE", L.name.c_str(),
+                     L.resolution_m, L.south(), L.north, L.west, L.east());
+            sc.terrain_layers.push_back(buf);
+        }
+    }
+    sc.cam_x = camera_.position.x;
+    sc.cam_z = camera_.position.z;
+    sc.cam_yaw_deg = std::atan2(camera_.target.x - camera_.position.x,
+                                -(camera_.target.z - camera_.position.z)) * RAD2DEG;
+}
+
+void Application::update_minimap() {
+    SceneInfo& sc = ui_.state().scene;
+    // Finished job → upload.
+    if (minimap_job_.valid() &&
+        minimap_job_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        std::vector<unsigned char> px = minimap_job_.get();
+        if (!minimap_tex_.id) {
+            Image img{ px.data(), kMinimapPx, kMinimapPx, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
+            minimap_tex_ = LoadTextureFromImage(img);
+            SetTextureFilter(minimap_tex_, TEXTURE_FILTER_BILINEAR);
+        } else {
+            UpdateTexture(minimap_tex_, px.data());
+        }
+        minimap_key_ = minimap_pending_key_;
+        sc.minimap = minimap_tex_;
+        sc.map_cx = minimap_key_.cx;
+        sc.map_cz = minimap_key_.cz;
+        sc.map_range = minimap_key_.range;
+    }
+    if (!terrain_.has_data() || minimap_job_.valid()) return;
+
+    // Area: all active tracks (or the view when there are none), as a power-of-
+    // two range snapped to an eighth of itself so it only re-renders now and then.
+    float xmin = 1e30f, xmax = -1e30f, zmin = 1e30f, zmax = -1e30f;
+    world_.query<const ecs::EntityMeta, const ecs::Position>()
+        .each([&](const ecs::EntityMeta& m, const ecs::Position& p) {
+            if (!m.active) return;
+            xmin = std::min(xmin, p.v.x); xmax = std::max(xmax, p.v.x);
+            zmin = std::min(zmin, p.v.z); zmax = std::max(zmax, p.v.z);
+        });
+    float cx, cz, need;
+    if (xmin > xmax) {
+        cx = camera_.target.x; cz = camera_.target.z;
+        need = ui_.state().camera_distance * 3.0f;
+    } else {
+        cx = 0.5f * (xmin + xmax); cz = 0.5f * (zmin + zmax);
+        need = std::max(xmax - xmin, zmax - zmin) * 1.25f;
+    }
+    need = std::clamp(need, 4000.0f, 1600000.0f);
+    const float range = std::pow(2.0f, std::ceil(std::log2(need)));
+    const float snap = range / 8.0f;
+    MapKey key{ std::round(cx / snap) * snap, std::round(cz / snap) * snap, range };
+    if (key.cx == minimap_key_.cx && key.cz == minimap_key_.cz && key.range == minimap_key_.range &&
+        minimap_tex_.id)
+        return;
+    minimap_pending_key_ = key;
+    const GeoFrame frame = geo_;
+    minimap_job_ = std::async(std::launch::async, [this, frame, key] {
+        return terrain_.render_map(frame, key.cx, key.cz, key.range, kMinimapPx);
+    });
+}
+
 void Application::draw_terrain() {
-    auto& state = ui_.state();
-    if (state.terrain_mode == 0) return;
-
-    // ── LOD: adapt grid resolution to camera distance, with geomorphing ───────
-    // Detail halves at each band boundary (step 1→2→4→8). To kill the visible
-    // "pop" at a boundary, the fine-grid vertices that vanish at the next coarser
-    // level are smoothly morphed toward the coarse surface over the upper half of
-    // each band — so by the time the step actually doubles the meshes already
-    // coincide (classic geomipmap geomorphing).
-    const float cam_dist = state.camera_distance;
-    int   lod_step = 8;
-    float band_lo = 25000.0f, band_hi = 0.0f;   // band_hi==0 ⇒ coarsest, no morph
-    if      (cam_dist < 3000.0f)  { lod_step = 1; band_lo = 0.0f;     band_hi = 3000.0f;  }
-    else if (cam_dist < 10000.0f) { lod_step = 2; band_lo = 3000.0f;  band_hi = 10000.0f; }
-    else if (cam_dist < 25000.0f) { lod_step = 4; band_lo = 10000.0f; band_hi = 25000.0f; }
-
-    float morph = 0.0f;
-    if (band_hi > 0.0f) {
-        float morph_start = band_lo + (band_hi - band_lo) * 0.5f;
-        morph = std::clamp((cam_dist - morph_start) / (band_hi - morph_start), 0.0f, 1.0f);
-    }
-
-    constexpr int   FULL_GRID = 80;            // 80 columns/rows at all LODs
-    constexpr float BASE_TILE = 1000.0f;       // 1 km base tile
-    float tile_sz = BASE_TILE * lod_step;
-    int   grid_n  = FULL_GRID;                // Number of tiles is constant, so physical width expands with LOD
-
-    // Infinite terrain: center on the camera, snapped to 2× tile size so that a
-    // vertex's even/odd parity matches the next-coarser grid (needed for morphing).
-    float snap = tile_sz * 2.0f;
-    float cam_grid_x = roundf(camera_.position.x / snap) * snap;
-    float cam_grid_z = roundf(camera_.position.z / snap) * snap;
-    float start_x = cam_grid_x - (grid_n * tile_sz) * 0.5f;
-    float start_z = cam_grid_z - (grid_n * tile_sz) * 0.5f;
-
-    // Raw procedural height (world-space coords)
-    auto base_height = [&](float wx, float wz) -> float {
-        float h = 800.0f * sinf(wx * 0.00006f) * cosf(wz * 0.00006f)
-                + 350.0f * sinf(wx * 0.00015f + 0.8f) * sinf(wz * 0.00012f + 1.2f)
-                + 120.0f * cosf(wx * 0.0004f + 2.0f)  * cosf(wz * 0.0003f)
-                +  40.0f * sinf(wx * 0.001f)           * sinf(wz * 0.001f);
-        return h * state.terrain_height_scale;
-    };
-
-    // Geomorphed height at grid index (ix,iz). Odd vertices (those absent from the
-    // next-coarser grid) blend toward the coarse surface by the morph factor.
-    auto get_height = [&](int ix, int iz) -> float {
-        float wx = start_x + ix * tile_sz, wz = start_z + iz * tile_sz;
-        float h = base_height(wx, wz);
-        if (morph <= 0.001f) return h;
-        bool ox = (ix & 1) != 0, oz = (iz & 1) != 0;
-        float ts = tile_sz, coarse = h;
-        if (ox && !oz)      coarse = 0.5f  * (base_height(wx - ts, wz) + base_height(wx + ts, wz));
-        else if (!ox && oz) coarse = 0.5f  * (base_height(wx, wz - ts) + base_height(wx, wz + ts));
-        else if (ox && oz)  coarse = 0.25f * (base_height(wx - ts, wz - ts) + base_height(wx + ts, wz - ts)
-                                            + base_height(wx - ts, wz + ts) + base_height(wx + ts, wz + ts));
-        return h + (coarse - h) * morph;
-    };
-
-    // Fog blend [0..1] from the camera, scaled to zoom so the terrain's far edge
-    // always dissolves into the horizon regardless of LOD/zoom level.
-    auto fog_factor = [&](float wx, float wz) -> float {
-        float dx = wx - camera_.position.x, dz = wz - camera_.position.z;
-        float d  = sqrtf(dx * dx + dz * dz);
-        float start = cam_dist * 0.6f, end = cam_dist * 2.6f;
-        return std::clamp((d - start) / std::max(1.0f, end - start), 0.0f, 1.0f);
-    };
-
-    // Military-space surface colour, blended toward the horizon haze by fog.
-    auto terrain_color = [&](float h, float wx, float wz) {
-        float nh = (state.terrain_height_scale > 0.01f)
-                   ? std::clamp((h + 1000.0f) / (2000.0f * state.terrain_height_scale), 0.0f, 1.0f)
-                   : 0.5f;
-        // Deep space blue/black base, fading to dark obsidian/slate peaks
-        float r = 10.0f + nh * 15.0f;
-        float g = 15.0f + nh * 20.0f;
-        float b = 25.0f + nh * 30.0f;
-        float f = fog_factor(wx, wz);
-        r += (kSkyHorizon.r - r) * f;
-        g += (kSkyHorizon.g - g) * f;
-        b += (kSkyHorizon.b - b) * f;
-        rlColor4ub((unsigned char)r, (unsigned char)g, (unsigned char)b, 255);
-    };
-
-    // ── Solid terrain ─────────────────────────────────────────────────────────
-    if (state.terrain_mode == 2 || state.terrain_mode == 3) {
-        rlBegin(RL_QUADS);
-        for (int iz = 0; iz < grid_n; ++iz) {
-            for (int ix = 0; ix < grid_n; ++ix) {
-                float x0 = start_x + ix * tile_sz,  z0 = start_z + iz * tile_sz;
-                float x1 = x0 + tile_sz,            z1 = z0 + tile_sz;
-
-                float h00 = get_height(ix,     iz);
-                float h10 = get_height(ix + 1, iz);
-                float h11 = get_height(ix + 1, iz + 1);
-                float h01 = get_height(ix,     iz + 1);
-                float havg = (h00 + h10 + h11 + h01) * 0.25f;
-
-                terrain_color(havg, x0 + tile_sz * 0.5f, z0 + tile_sz * 0.5f);
-                rlVertex3f(x0, h00, z0);
-                rlVertex3f(x0, h01, z1);
-                rlVertex3f(x1, h11, z1);
-                rlVertex3f(x1, h10, z0);
-            }
-        }
-        rlEnd();
-    }
-
-    // ── Grid wireframe — stays legible at every zoom level ────────────────────
-    if (state.terrain_mode == 1 || state.terrain_mode == 3) {
-        // Keep the grid visible at all distances. Fade only gently at extreme
-        // zoom so it never vanishes — it remains a subtle reference at any scale.
-        float fade = 1.0f - std::clamp((cam_dist - 60000.0f) / 40000.0f, 0.0f, 0.55f);
-        // Lone wireframe (mode 1) is the primary visual, so make it brighter than
-        // the overlay grid drawn on top of solid terrain (mode 3).
-        float peak = (state.terrain_mode == 1) ? 150.0f : 80.0f;
-        unsigned char grid_alpha = (unsigned char)(fade * peak);
-        // Lift the grid above the solid surface by a distance-scaled offset so it
-        // never z-fights with the terrain once depth precision drops at far zoom.
-        float wire_off = std::max(2.0f, cam_dist * 0.0015f);
-        if (grid_alpha > 2) {
-            rlBegin(RL_LINES);
-            for (int iz = 0; iz < grid_n; ++iz) {
-                for (int ix = 0; ix < grid_n; ++ix) {
-                    float x0 = start_x + ix * tile_sz, z0 = start_z + iz * tile_sz;
-                    float x1 = x0 + tile_sz,           z1 = z0 + tile_sz;
-
-                    float h00 = get_height(ix,     iz);
-                    float h10 = get_height(ix + 1, iz);
-                    float h11 = get_height(ix + 1, iz + 1);
-                    float h01 = get_height(ix,     iz + 1);
-
-                    // Military space grid: desaturated cyan/grey, fading with the
-                    // terrain into the horizon haze at distance.
-                    float gf = 1.0f - fog_factor(x0 + tile_sz * 0.5f, z0 + tile_sz * 0.5f);
-                    rlColor4ub(40, 90, 110, (unsigned char)(grid_alpha * gf));
-                    rlVertex3f(x0, h00 + wire_off, z0);
-                    rlVertex3f(x0, h01 + wire_off, z1);
-
-                    rlVertex3f(x0, h00 + wire_off, z0);
-                    rlVertex3f(x1, h10 + wire_off, z0);
-
-                    rlVertex3f(x0, h01 + wire_off, z1);
-                    rlVertex3f(x1, h11 + wire_off, z1);
-
-                    rlVertex3f(x1, h10 + wire_off, z0);
-                    rlVertex3f(x1, h11 + wire_off, z1);
-                }
-            }
-            rlEnd();
-        }
-    }
+    terrain_.draw(camera_, terrain_style());
 }
 
 void Application::update_camera_state(float dt) {
@@ -1239,7 +1351,7 @@ void Application::update_camera_state(float dt) {
         if (wheel != 0.0f) {
             // Exponential zoom — faster when far, slower when close
             state.camera_distance *= powf(0.88f, wheel);
-            state.camera_distance  = std::clamp(state.camera_distance, 30.0f, 80000.0f);
+            state.camera_distance  = std::clamp(state.camera_distance, 30.0f, 900000.0f);
         }
     }
 
@@ -1405,7 +1517,7 @@ void Application::update_camera_state(float dt) {
         // Never let the orbit camera dip below the terrain surface — otherwise you
         // see straight through the ground (terrain "clipping" against the near
         // plane). Keep it a small margin above the hill it's over.
-        float ground = terrain_height_at(camera_.position.x, camera_.position.z);
+        float ground = terrain_height_at(camera_.position.x, camera_.position.z) * state.altitude_exaggerate;
         float min_y  = ground + std::max(5.0f, state.camera_distance * 0.02f);
         if (camera_.position.y < min_y) camera_.position.y = min_y;
         camera_.up = { 0.0f, 1.0f, 0.0f };

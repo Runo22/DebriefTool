@@ -10,8 +10,12 @@
 #include "../persistence/Recorder.hpp"
 #include "../ui/AfterActionUI.hpp"
 #include "../demo/DemoMode.hpp"
+#include "../geo/GeoFrame.hpp"
+#include "../terrain/TerrainSystem.hpp"
+#include "../terrain/Airfields.hpp"
 #include <flecs.h>
 #include <raylib.h>
+#include <future>
 #include <unordered_map>
 
 namespace afteraction {
@@ -24,6 +28,8 @@ struct AppConfig {
     std::string window_title  = "AfterAction  |  Tactical Debrief";
     int         target_fps    = 60;
     bool        demo_mode     = false;
+    std::string terrain_dir;              // empty = <exe dir>/terrain
+    std::string open_file;                // .aar / .csv to load at startup
 };
 
 class Application {
@@ -38,6 +44,7 @@ private:
     void init_ecs();
     void init_assets();
     void init_camera();
+    void init_terrain();
     void init_ui_callbacks();
 
     void tick(float dt);
@@ -47,15 +54,26 @@ private:
     void render();
     void render_3d();
     void draw_terrain();
+    TerrainStyle terrain_style() const;
 
-    // Procedural terrain surface height at a world (x,z). Mirrors the formula in
-    // draw_terrain() so ground markers/drop-lines can sit on the terrain even when
-    // it has relief. Returns 0 when terrain is disabled.
+    // Terrain height (m MSL, real scale) under a world (x,z) — 0 when terrain is
+    // hidden or the point is outside DEM coverage. Multiply by the vertical
+    // scale for rendering.
     float terrain_height_at(float wx, float wz) const;
+    float display_scale(Vector3 render_pos) const;
 
     // A ground ring that follows the terrain relief (vertices lifted to terrain
     // height) — used for selection/altitude markers so they don't sink into hills.
     void draw_ground_ring(float cx, float cz, float radius, Color col) const;
+
+    // Scene origin. Changing it re-centres the world and rebuilds the terrain.
+    void set_origin(double lat, double lon);
+
+    // Per-frame read-outs for the UI (cursor position, terrain status, minimap).
+    void update_scene_info();
+    void update_minimap();
+    // Move the free camera so it looks at a world (x,z), keeping the zoom.
+    void look_at(float x, float z);
     void render_ui();
     void handle_input(float dt);
     void update_camera_state(float dt);
@@ -85,10 +103,10 @@ private:
     void import_csv(const std::string& path);      // flexible CSV log
     void browse_and_load();                        // native open dialog → dispatch
 
-    // Lazy-set scene origin from first received position; converts subsequent
-    // lat/lon/alt to ENU metres and fills state.position[].
-    // For demo states (position already ENU), pass enu_already=true.
-    void ensure_origin_and_convert(net::EntityState& state, bool enu_already = false);
+    // Converts lat/lon/alt to world metres (fills position/orientation/velocity).
+    // The first live track re-centres the scene if it is far from the current
+    // origin (so data anywhere works), otherwise the origin is kept.
+    void ensure_origin_and_convert(net::EntityState& state);
 
     flecs::entity get_or_create_entity(const net::EntityState& state);
 
@@ -128,10 +146,20 @@ private:
     demo::DemoMode     demo_;
     Vector3            camera_free_target_{ 0.0f, 0.0f, 0.0f };
 
-    // Scene origin (WGS84) — set from first entity's position.
-    double   origin_lat_ = 0.0, origin_lon_ = 0.0;
-    float    origin_alt_ = 0.0f;
-    bool     origin_set_ = false;
+    // Scene origin (WGS-84) and the real-terrain renderer built around it.
+    GeoFrame      geo_;
+    TerrainSystem terrain_;
+    Airfields     airfields_;
+    Font          label_font_{};   // 3D labels (Barlow SemiBold)
+
+    // Minimap hillshade: built on a worker, uploaded here.
+    struct MapKey { float cx = 0, cz = 0, range = 0; };
+    Texture2D     minimap_tex_{};
+    MapKey        minimap_key_{}, minimap_pending_key_{};
+    std::future<std::vector<unsigned char>> minimap_job_;
+    static constexpr int kMinimapPx = 256;
+    // Set once live data has decided the origin; cleared by Clear.
+    bool          origin_locked_ = false;
 
     // Flat buffer of current live entity states (for store ingestion).
     std::vector<net::EntityState> live_states_;

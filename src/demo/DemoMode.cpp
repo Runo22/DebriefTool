@@ -1,197 +1,237 @@
 #include "DemoMode.hpp"
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <algorithm>
-#include <cstring>
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
 
 namespace afteraction::demo {
 
-static uint64_t now_ns() {
-    return static_cast<uint64_t>(
-        std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::system_clock::now().time_since_epoch()).count());
+namespace {
+
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kG  = 9.81;
+inline double rad(double d) { return d * kPi / 180.0; }
+inline double deg(double r) { return r * 180.0 / kPi; }
+inline double wrap180(double a) { a = std::fmod(a + 180.0, 360.0); return (a < 0 ? a + 360.0 : a) - 180.0; }
+
+uint64_t now_ns() {
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count());
 }
 
-// Build a state with ENU position directly — bypasses lat/lon conversion.
-// orientation[] left identity; Application::apply_state_to_ecs reads psi_deg
-// from state and builds the quaternion. So we still fill psi/theta/phi here.
-static net::EntityState make_state(
-    uint32_t id, uint16_t type, const char* callsign,
-    float x, float y, float z,
-    float psi_deg, float theta_deg, float phi_deg,
-    float speed_mps, uint8_t health = 255)
-{
+// Runway 03/21 thresholds (OurAirports) and true heading.
+constexpr double kRwy03Lat = 40.0662, kRwy03Lon = 32.5550;
+constexpr double kRwyHdg   = 32.8;
+
+} // namespace
+
+DemoMode::DemoMode() {
+    anchor_.set(kAnchorLat, kAnchorLon);
+    reset();
+}
+
+double DemoMode::ground(double x, double z) const {
+    if (!height_) return 0.0;
+    double lat, lon;
+    anchor_.to_geo(x, z, &lat, &lon);
+    return height_(lat, lon);
+}
+
+void DemoMode::reset() {
+    time_ = 0.0;
+    missile_launched_ = false;
+    flyers_.clear();
+
+    const Vector3 thr = anchor_.to_world(kRwy03Lat, kRwy03Lon, 0.0);
+    const double hs = std::sin(rad(kRwyHdg)), hc = std::cos(rad(kRwyHdg));
+    // Point `d` metres along the runway axis from the 03 threshold, `s` to the right.
+    auto along = [&](double d, double s) {
+        return std::pair<double, double>{ thr.x + d * hs + s * hc, thr.z - d * hc + s * hs };
+    };
+
+    // VIPER01 — takeoff from runway 03, then a racetrack west of the field.
+    {
+        Flyer f{1, net::TYPE_JET, "VIPER01"};
+        f.x = thr.x; f.z = thr.z;
+        f.hdg = kRwyHdg;
+        f.on_ground = true;
+        f.rotate_speed = 82.0;
+        f.accel = 3.2;
+        f.hold_until = 4.0;
+        f.max_turn = 4.0;
+        f.max_climb = 25.0;
+        auto [ax, az] = along(9000, 0);
+        auto [bx, bz] = along(16000, -9000);
+        auto [cx, cz] = along(4000, -16000);
+        auto [dx, dz] = along(-6000, -9000);
+        f.route = { {ax, az, 1800, 150, false}, {bx, bz, 3000, 210, false},
+                    {cx, cz, 3000, 220, false}, {dx, dz, 3000, 220, false},
+                    {ax, az, 3000, 220, false} };
+        flyers_.push_back(f);
+    }
+    // VIPER02 — wide orbit at 5 500 m (approximated by 8 waypoints on a circle).
+    {
+        Flyer f{2, net::TYPE_JET, "VIPER02"};
+        const double R = 12000, cx = 4000, cz = -6000;
+        for (int i = 0; i < 8; ++i) {
+            const double a = -i * kPi / 4;
+            f.route.push_back({cx + R * std::cos(a), cz + R * std::sin(a), 5500, 260, false});
+        }
+        f.x = f.route[0].x; f.z = f.route[0].z + 3000; f.alt = 5500; f.speed = 260;
+        f.hdg = 0;
+        f.max_turn = 3.0;
+        flyers_.push_back(f);
+    }
+    // VIPER03 — figure of eight at 4 200 m north-east.
+    {
+        Flyer f{6, net::TYPE_JET, "VIPER03"};
+        const double cx = 10000, cz = -14000;
+        f.route = { {cx - 7000, cz, 4200, 240, false}, {cx, cz - 5000, 4200, 240, false},
+                    {cx + 7000, cz, 4200, 240, false}, {cx, cz + 5000, 4200, 240, false} };
+        f.x = cx - 9000; f.z = cz + 2000; f.alt = 4200; f.speed = 240; f.hdg = 20;
+        f.max_turn = 5.0;
+        flyers_.push_back(f);
+    }
+    // EAGLE01 — helicopter patrol 150 m above the terrain, south of the field.
+    {
+        Flyer f{5, net::TYPE_HELO, "EAGLE01"};
+        f.route = { {-3000, 4000, 150, 55, true}, {2000, 7000, 150, 55, true},
+                    {5000, 3000, 150, 55, true}, {0, 1500, 150, 55, true} };
+        f.x = -3000; f.z = 2500; f.speed = 55; f.hdg = 30;
+        f.alt = ground(f.x, f.z) + 150;
+        f.max_turn = 8.0;
+        f.max_climb = 8.0;
+        flyers_.push_back(f);
+    }
+    // CONVOY1 — ground vehicle loop on the plain south-east of the base.
+    {
+        Flyer f{7, net::TYPE_GROUND, "CONVOY1"};
+        f.route = { {1500, 2500, 0, 14, true}, {4500, 3500, 0, 14, true},
+                    {5500, 6500, 0, 14, true}, {2000, 6000, 0, 14, true} };
+        f.x = 1500; f.z = 2500; f.speed = 14; f.hdg = 70;
+        f.on_ground = true;
+        f.max_turn = 15.0;
+        flyers_.push_back(f);
+    }
+}
+
+void DemoMode::step(Flyer& f, double dt) {
+    if (!f.alive) return;
+    if (time_ < f.hold_until) {
+        if (f.on_ground) f.alt = ground(f.x, f.z) + 2.0;
+        return;
+    }
+
+    // Ground roll: straight down the runway until rotation speed.
+    if (f.on_ground && f.rotate_speed > 0.0) {
+        f.speed += f.accel * dt;
+        f.x += f.speed * std::sin(rad(f.hdg)) * dt;
+        f.z -= f.speed * std::cos(rad(f.hdg)) * dt;
+        f.alt = ground(f.x, f.z) + 2.0;
+        f.pitch = f.roll = 0.0;
+        if (f.speed >= f.rotate_speed) { f.on_ground = false; f.accel = 6.0; }
+        return;
+    }
+
+    if (f.route.empty()) return;
+    const Waypoint& w = f.route[f.wp];
+    const double dx = w.x - f.x, dz = w.z - f.z;
+    const double dist = std::hypot(dx, dz);
+    if (dist < std::max(250.0, f.speed * 5.0)) f.wp = (f.wp + 1) % f.route.size();
+
+    // Heading toward the waypoint, turn-rate limited; bank from the turn rate.
+    const double bearing = deg(std::atan2(dx, -dz));
+    const double turn = std::clamp(wrap180(bearing - f.hdg) * 0.6, -f.max_turn, f.max_turn);
+    f.hdg = std::fmod(f.hdg + turn * dt + 360.0, 360.0);
+    const double bank = f.on_ground ? 0.0 : deg(std::atan(f.speed * rad(turn) / kG));
+    f.roll += (bank - f.roll) * std::min(1.0, 3.0 * dt);
+
+    f.speed += std::clamp(w.speed - f.speed, -f.accel * dt, f.accel * dt);
+
+    const double gnd = ground(f.x, f.z);
+    if (f.on_ground) {
+        f.alt = gnd + 2.0;
+        f.pitch = 0.0;
+    } else {
+        const double target = w.agl ? gnd + w.alt : w.alt;
+        const double climb = std::clamp((target - f.alt) * 0.25, -f.max_climb, f.max_climb);
+        f.alt = std::max(f.alt + climb * dt, gnd + 20.0);
+        f.pitch += (deg(std::asin(std::clamp(climb / std::max(f.speed, 1.0), -1.0, 1.0))) - f.pitch)
+                   * std::min(1.0, 2.0 * dt);
+    }
+    const double horiz = f.speed * std::cos(rad(f.pitch));
+    f.x += horiz * std::sin(rad(f.hdg)) * dt;
+    f.z -= horiz * std::cos(rad(f.hdg)) * dt;
+}
+
+net::EntityState DemoMode::to_state(const Flyer& f) const {
     net::EntityState s{};
     s.source_id    = 0;
-    s.entity_id    = id;
-    s.entity_type  = type;
+    s.entity_id    = f.id;
+    s.entity_type  = f.type;
     s.timestamp_ns = now_ns();
-    s.health       = health;
-    s.psi_deg      = psi_deg;
-    s.theta_deg    = theta_deg;
-    s.phi_deg      = phi_deg;
-    s.speed_mps    = speed_mps;
-    s.alt_m        = y;
-
-    // Position already in ENU metres — skip lat/lon conversion.
-    s.position[0]  = x;
-    s.position[1]  = y;
-    s.position[2]  = z;
-
-    // Velocity from speed + heading
-    float psi_rad  = psi_deg  * static_cast<float>(M_PI) / 180.0f;
-    float theta_rad= theta_deg* static_cast<float>(M_PI) / 180.0f;
-    s.velocity[0]  =  speed_mps * sinf(psi_rad) * cosf(theta_rad);
-    s.velocity[1]  =  speed_mps * sinf(theta_rad);
-    s.velocity[2]  = -speed_mps * cosf(psi_rad) * cosf(theta_rad);
-
-    // Use snprintf instead of strncpy — strncpy is deprecated on macOS Clang 15+
-    snprintf(s.callsign, sizeof(s.callsign), "%s", callsign);
+    s.health       = f.alive ? 255 : 0;
+    s.destroyed    = !f.alive;
+    anchor_.to_geo(f.x, f.z, &s.lat_deg, &s.lon_deg);
+    s.alt_m     = f.alt;
+    s.psi_deg   = f.hdg;
+    s.theta_deg = f.pitch;
+    s.phi_deg   = f.roll;
+    s.speed_mps = f.speed;
+    std::snprintf(s.callsign, sizeof(s.callsign), "%s", f.callsign);
     return s;
 }
 
-// Circular orbit helper.
-// Returns (x, y, z) and heading at angle `theta_orbit` (radians, clockwise from North).
-static void orbit(float cx, float cy, float cz,
-                  float radius, float theta_orbit,
-                  float& out_x, float& out_y, float& out_z, float& out_psi_deg)
-{
-    out_x = cx + radius * sinf(theta_orbit);
-    out_y = cy;
-    out_z = cz - radius * cosf(theta_orbit);
-    // Tangent heading (clockwise from North = psi)
-    out_psi_deg = fmodf(theta_orbit * 180.0f / static_cast<float>(M_PI) + 90.0f, 360.0f);
-    if (out_psi_deg < 0) out_psi_deg += 360.0f;
-}
-
 std::vector<net::EntityState> DemoMode::tick(float dt_sec) {
-    time += dt_sec;
-    const float t = static_cast<float>(time);
+    // Integrate in small steps so low frame rates don't break the autopilot.
+    const double dt = std::min(static_cast<double>(dt_sec), 0.25);
+    const int n = std::max(1, static_cast<int>(std::ceil(dt / 0.05)));
+    for (int i = 0; i < n; ++i) {
+        time_ += dt / n;
+        for (auto& f : flyers_) step(f, dt / n);
+    }
 
-    std::vector<net::EntityState> states;
-    states.reserve(10);
+    // AIM120: launched from VIPER02 at T+40 s, pure pursuit on VIPER03,
+    // self-destructs after 30 s.
+    Flyer* v2 = nullptr; Flyer* v3 = nullptr; Flyer* msl = nullptr;
+    for (auto& f : flyers_) {
+        if (f.id == 2) v2 = &f;
+        if (f.id == 6) v3 = &f;
+        if (f.id == 3) msl = &f;
+    }
+    if (!missile_launched_ && time_ >= 40.0 && v2) {
+        Flyer m{3, net::TYPE_MISSILE, "AIM120"};
+        m.x = v2->x; m.z = v2->z; m.alt = v2->alt - 10; m.hdg = v2->hdg; m.speed = v2->speed;
+        flyers_.push_back(m);
+        missile_launched_ = true;
+        missile_t0_ = time_;
+        msl = &flyers_.back();
+        for (auto& f : flyers_) if (f.id == 6) v3 = &f;
+    }
+    if (msl && msl->alive && v3) {
+        const double dx = v3->x - msl->x, dz = v3->z - msl->z, dy = v3->alt - msl->alt;
+        const double d  = std::sqrt(dx * dx + dy * dy + dz * dz) + 1e-3;
+        msl->speed = std::min(780.0, msl->speed + 120.0 * dt);
+        const double step = msl->speed * dt;
+        msl->x += dx / d * step; msl->z += dz / d * step; msl->alt += dy / d * step;
+        msl->hdg   = std::fmod(deg(std::atan2(dx, -dz)) + 360.0, 360.0);
+        msl->pitch = deg(std::asin(std::clamp(dy / d, -1.0, 1.0)));
+        if (time_ - missile_t0_ > 30.0 || d < 60.0) msl->alive = false;
+    }
 
-    // ── VIPER01 — blue jet, CW orbit at 3 000 m altitude, R=5 000 m ──────────
+    std::vector<net::EntityState> out;
+    out.reserve(flyers_.size() + 1);
+    for (const auto& f : flyers_) out.push_back(to_state(f));
+
+    // BRAVO1 — static air-defence site east of the field, turret sweeping.
     {
-        const float speed  = 220.0f;           // m/s
-        const float radius = 5000.0f;
-        const float omega  = speed / radius;   // rad/s
-        float x, y, z, psi;
-        orbit(0, 3000, 0, radius, omega * t, x, y, z, psi);
-        // Gentle bank into the turn
-        states.push_back(make_state(1, net::TYPE_JET, "VIPER01", x, y, z,
-                                    psi, 0.0f, 22.0f, speed));
+        Flyer site{4, net::TYPE_AAA, "BRAVO1"};
+        site.x = 3500; site.z = -2500;
+        site.alt = ground(site.x, site.z) + 1.0;
+        site.hdg = std::fmod(time_ * 15.0, 360.0);
+        out.push_back(to_state(site));
     }
-
-    // ── VIPER02 — red jet, CCW orbit at 5 500 m, R=8 000 m ───────────────────
-    {
-        const float speed  = 280.0f;
-        const float radius = 8000.0f;
-        const float omega  = speed / radius;
-        float x, y, z, psi;
-        orbit(-500, 5500, 500, radius, -(omega * t) + 0.8f, x, y, z, psi);
-        psi = fmodf(psi + 180.0f, 360.0f);
-        states.push_back(make_state(2, net::TYPE_JET, "VIPER02", x, y, z,
-                                    psi, 0.0f, -22.0f, speed));
-    }
-
-    // ── VIPER03 — intercept jet, figure-8 at 4 200 m ──────────────────────────
-    {
-        const float speed = 240.0f;
-        // Figure-8 using Lissajous
-        float lx = 6000.0f * sinf(t * 0.025f);
-        float lz = 4000.0f * sinf(t * 0.05f);
-        float psi = atan2f(6000.0f * 0.025f * cosf(t * 0.025f),
-                           -(4000.0f * 0.05f * cosf(t * 0.05f))) * 180.0f / static_cast<float>(M_PI);
-        states.push_back(make_state(6, net::TYPE_JET, "VIPER03", lx, 4200.0f, lz,
-                                    psi, 0.0f, 15.0f, speed));
-    }
-
-    // ── AIM-120 — missile, launches from VIPER01 at t=12 s ───────────────────
-    if (t >= 12.0f && t < 50.0f) {
-        if (!missile_fired_) {
-            const float speed  = 220.0f;
-            const float radius = 5000.0f;
-            const float omega  = speed / radius;
-            float psi_unused;
-            orbit(0, 3000, 0, radius, omega * 12.0f,
-                  missile_x_, missile_y_, missile_z_, psi_unused);
-            missile_fired_ = missile_active_ = true;
-        }
-
-        // Fly toward VIPER02's current position
-        const float speed2 = 280.0f;
-        const float radius2= 8000.0f;
-        const float omega2 = speed2 / radius2;
-        float tx, ty, tz, tp;
-        orbit(-500, 5500, 500, radius2, -(omega2 * t) + 0.8f, tx, ty, tz, tp);
-
-        float dx = tx - missile_x_;
-        float dy = ty - missile_y_;
-        float dz = tz - missile_z_;
-        float dist = sqrtf(dx*dx + dy*dy + dz*dz) + 0.001f;
-
-        const float missile_speed = 600.0f; // m/s
-        float step = missile_speed * dt_sec;
-
-        missile_x_ += dx / dist * step;
-        missile_y_ += dy / dist * step;
-        missile_z_ += dz / dist * step;
-
-        float psi   = atan2f(dx, -dz) * 180.0f / static_cast<float>(M_PI);
-        float theta = asinf(std::clamp(dy / dist, -1.0f, 1.0f)) * 180.0f / static_cast<float>(M_PI);
-
-        states.push_back(make_state(3, net::TYPE_MISSILE, "AIM120",
-                                    missile_x_, missile_y_, missile_z_,
-                                    psi, theta, 0.0f, missile_speed));
-    } else if (t >= 50.0f) {
-        missile_active_ = false;
-    }
-
-    // ── BRAVO1 — static AAA site at (3000, 0, -4000) ─────────────────────────
-    {
-        // Rotate turret slowly
-        float turret_heading = fmodf(t * 15.0f, 360.0f);
-        states.push_back(make_state(4, net::TYPE_AAA, "BRAVO1",
-                                    3000.0f, 0.0f, -4000.0f,
-                                    turret_heading, 0.0f, 0.0f, 0.0f));
-    }
-
-    // ── EAGLE01 — helicopter, slow CCW patrol at 300 m, R=2 000 m ────────────
-    {
-        const float speed  = 55.0f;
-        const float radius = 2000.0f;
-        const float omega  = speed / radius;
-        float x, y, z, psi;
-        orbit(-2500, 300, 1500, radius, -(omega * t) + static_cast<float>(M_PI), x, y, z, psi);
-        psi = fmodf(psi + 180.0f, 360.0f);
-
-        // Hover oscillation
-        y += 30.0f * sinf(t * 0.4f);
-
-        states.push_back(make_state(5, net::TYPE_HELO, "EAGLE01",
-                                    x, y, z, psi, 0.0f, 5.0f, speed));
-    }
-
-    // ── DESTROYER — naval ship, slow coastal patrol ───────────────────────────
-    {
-        // Slow S-curve route
-        float sx = -8000.0f + t * 4.0f;  // ~4 m/s ~ 8 knots
-        float sz = 2000.0f * sinf(t * 0.005f);
-        float heading = atan2f(4.0f, 2000.0f * 0.005f * cosf(t * 0.005f)) * 180.0f / static_cast<float>(M_PI);
-        heading = fmodf(heading + 90.0f, 360.0f);
-
-        // Keep ship on sea (slightly below 0 terrain level)
-        states.push_back(make_state(7, net::TYPE_SHIP, "DESTRY1",
-                                    sx, -5.0f, sz, heading, 0.0f, 0.0f, 4.0f));
-    }
-
-    return states;
+    return out;
 }
 
 } // namespace afteraction::demo

@@ -114,6 +114,8 @@ set(RLIMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/rlImGui)
 add_library(rlimgui STATIC ${RLIMGUI_DIR}/rlImGui.cpp)
 target_include_directories(rlimgui PUBLIC ${RLIMGUI_DIR})
 target_link_libraries(rlimgui PUBLIC imgui raylib)
+# Icons sized to sit nicely next to the 16 px Barlow UI font.
+target_compile_definitions(rlimgui PRIVATE FONT_AWESOME_ICON_SIZE=14)
 
 # ── Third-party: tinyfiledialogs (native open/save dialogs) ───────────────────
 # Separate lib so our strict /WX doesn't fail on its old C. Native dialog on
@@ -123,6 +125,9 @@ target_include_directories(tinyfd PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 if(WIN32)
     target_link_libraries(tinyfd PUBLIC comdlg32 ole32 user32 shell32)
 endif()
+
+# ── Terrain heights (tdem) — our own standalone library in terrain/ ──────────
+add_subdirectory(terrain)
 
 # ── Third-party: Tracy (optional) ─────────────────────────────────────────────
 if(AFTERACTION_TRACY)
@@ -183,6 +188,7 @@ target_link_libraries(afteraction PRIVATE
     rlimgui
     yaml-cpp
     tinyfd
+    tdem::tdem
 )
 
 # ── Strict flags for OUR code only — NOT propagated to submodules ──────────────
@@ -260,6 +266,15 @@ add_custom_command(TARGET afteraction POST_BUILD
     COMMENT "Copying assets..."
 )
 
+# Terrain packs (~40 MB) go to <bin>/terrain; copy only when changed.
+file(GLOB TERRAIN_PACKS ${CMAKE_SOURCE_DIR}/terrain/data/*.tdem)
+list(APPEND TERRAIN_PACKS ${CMAKE_SOURCE_DIR}/terrain/tools/runways_tr.csv)
+add_custom_command(TARGET afteraction POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:afteraction>/terrain
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TERRAIN_PACKS} $<TARGET_FILE_DIR:afteraction>/terrain
+    COMMENT "Copying terrain packs..."
+)
+
 # ── Install — AfterAction only (third-party installs were skipped above) ───────
 include(GNUInstallDirs)
 # App + preview tool go in <prefix>/bin, with assets/ alongside so the app's
@@ -268,6 +283,7 @@ install(TARGETS afteraction RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(TARGETS hangar      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets
         DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES ${TERRAIN_PACKS} DESTINATION ${CMAKE_INSTALL_BINDIR}/terrain)
 
 # Ship the runtime libraries the binaries actually NEED to run on a clean machine.
 # All our third-party deps are static-linked, so the only runtime dependency is

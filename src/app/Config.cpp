@@ -41,15 +41,17 @@ void ConfigManager::load_config(UIState& state, const std::string& path) {
         if (config["camera_yaw"]) state.camera_yaw = config["camera_yaw"].as<float>();
         if (config["camera_pitch"]) state.camera_pitch = config["camera_pitch"].as<float>();
         if (config["camera_distance"]) state.camera_distance = config["camera_distance"].as<float>();
-        if (config["entity_3d_scale"]) state.entity_3d_scale = config["entity_3d_scale"].as<float>();
+        if (config["entity_size"]) state.entity_3d_scale = config["entity_size"].as<float>();
         if (config["trail_width_override"]) state.trail_width_override = config["trail_width_override"].as<float>();
-        if (config["altitude_exaggerate"]) state.altitude_exaggerate = config["altitude_exaggerate"].as<float>();
+        if (config["vertical_scale"]) state.altitude_exaggerate = config["vertical_scale"].as<float>();
         
         // Added far clip setting
         if (config["far_clip_plane"]) state.far_clip_plane = config["far_clip_plane"].as<float>();
         
         if (config["terrain_mode"]) state.terrain_mode = config["terrain_mode"].as<int>();
-        if (config["terrain_height_scale"]) state.terrain_height_scale = config["terrain_height_scale"].as<float>();
+        if (config["terrain_detail"]) state.terrain_detail = config["terrain_detail"].as<float>();
+        if (config["home_lat"]) state.origin_lat = config["home_lat"].as<double>();
+        if (config["home_lon"]) state.origin_lon = config["home_lon"].as<double>();
 
         if (config["invert_look"]) state.invert_look = config["invert_look"].as<bool>();
         if (config["mouse_sensitivity"]) state.mouse_sensitivity = config["mouse_sensitivity"].as<float>();
@@ -74,14 +76,16 @@ void ConfigManager::save_config(const UIState& state, const std::string& path) {
         config["camera_yaw"] = state.camera_yaw;
         config["camera_pitch"] = state.camera_pitch;
         config["camera_distance"] = state.camera_distance;
-        config["entity_3d_scale"] = state.entity_3d_scale;
+        config["entity_size"] = state.entity_3d_scale;
         config["trail_width_override"] = state.trail_width_override;
-        config["altitude_exaggerate"] = state.altitude_exaggerate;
+        config["vertical_scale"] = state.altitude_exaggerate;
         
         config["far_clip_plane"] = state.far_clip_plane;
         
         config["terrain_mode"] = state.terrain_mode;
-        config["terrain_height_scale"] = state.terrain_height_scale;
+        config["terrain_detail"] = state.terrain_detail;
+        config["home_lat"] = state.origin_lat;
+        config["home_lon"] = state.origin_lon;
 
         config["invert_look"] = state.invert_look;
         config["mouse_sensitivity"] = state.mouse_sensitivity;

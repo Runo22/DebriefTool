@@ -149,7 +149,8 @@ void Recorder::finalise() {
 bool Recorder::export_slice(const TelemetryStore& store,
                             float duration_seconds,
                             const std::filesystem::path& out_path,
-                            const std::string& session_name) noexcept
+                            const std::string& session_name,
+                            const SceneOrigin& origin) noexcept
 {
     auto snapshots = store.extract_last(duration_seconds);
     if (snapshots.empty()) return false;
@@ -167,7 +168,6 @@ bool Recorder::export_slice(const TelemetryStore& store,
     auto n = std::min(session_name.size(), size_t(31));
     std::memcpy(hdr.session_name, session_name.c_str(), n);
 
-    const SceneOrigin origin{};
     f.write(reinterpret_cast<const char*>(&hdr),    sizeof(hdr));
     f.write(reinterpret_cast<const char*>(&origin), sizeof(origin));
 
@@ -214,7 +214,8 @@ bool Recorder::export_slice(const TelemetryStore& store,
 
 // ── .aar loader ──────────────────────────────────────────────────────────────
 bool Recorder::load_into(const std::filesystem::path& path,
-                         TelemetryStore& store) noexcept
+                         TelemetryStore& store,
+                         SceneOrigin* origin_out) noexcept
 {
     store.clear();
 
@@ -231,6 +232,7 @@ bool Recorder::load_into(const std::filesystem::path& path,
 
     SceneOrigin origin{};
     f.read(reinterpret_cast<char*>(&origin), sizeof(origin));
+    if (origin_out) *origin_out = origin;
 
     // Read frames sequentially up to index_offset (or EOF if index not written).
     uint64_t data_end = hdr.index_offset ? hdr.index_offset : UINT64_MAX;

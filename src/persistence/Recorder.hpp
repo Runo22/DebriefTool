@@ -51,11 +51,14 @@ public:
     static bool export_slice(const TelemetryStore& store,
                              float duration_seconds,
                              const std::filesystem::path& out_path,
-                             const std::string& session_name = "") noexcept;
+                             const std::string& session_name = "",
+                             const SceneOrigin& origin = {}) noexcept;
 
     // Loads a .aar file back into a TelemetryStore for playback.
+    // `origin` (optional) receives the georeference the file was recorded with.
     static bool load_into(const std::filesystem::path& path,
-                          TelemetryStore& store) noexcept;
+                          TelemetryStore& store,
+                          SceneOrigin* origin = nullptr) noexcept;
 
     [[nodiscard]] bool        is_recording() const noexcept { return recording_.load(); }
     [[nodiscard]] uint64_t    frames_written() const noexcept { return frames_written_.load(); }

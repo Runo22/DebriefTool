@@ -2,6 +2,7 @@
 #include "../network/Packet.hpp"
 #include <algorithm>
 #include <array>
+#include <deque>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -111,9 +112,7 @@ public:
             uint64_t key = (static_cast<uint64_t>(es.source_id) << 32) | es.entity_id;
             auto& hist = entity_histories_[key];
             hist.push_back(es);
-            if (hist.size() > kMaxSnapshots) {
-                hist.erase(hist.begin());
-            }
+            if (hist.size() > kMaxSnapshots) hist.pop_front();   // O(1), unlike vector::erase
         }
     }
 
@@ -149,7 +148,7 @@ public:
     }
 
     // Retrieve the entire historical path of a specific entity.
-    [[nodiscard]] const std::vector<net::EntityState>* get_entity_history(uint32_t source_id, uint32_t entity_id) const {
+    [[nodiscard]] const std::deque<net::EntityState>* get_entity_history(uint32_t source_id, uint32_t entity_id) const {
         std::shared_lock lock(mu_);
         uint64_t key = (static_cast<uint64_t>(source_id) << 32) | entity_id;
         auto it = entity_histories_.find(key);
@@ -238,7 +237,7 @@ private:
     uint32_t write_idx_       = 0;
     uint32_t count_           = 0;
     uint64_t last_snapshot_ns_= 0;
-    std::unordered_map<uint64_t, std::vector<net::EntityState>> entity_histories_;
+    std::unordered_map<uint64_t, std::deque<net::EntityState>> entity_histories_;
 };
 
 } // namespace afteraction

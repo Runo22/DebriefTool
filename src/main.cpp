@@ -125,6 +125,9 @@ int main(int argc, char** argv) {
         else if (!strcmp(a, "--addr") && i+1<argc)        { cfg.bind_addr = argv[++i]; }
         else if (!strcmp(a, "--width") && i+1<argc)       { cfg.window_width  = atoi(argv[++i]); }
         else if (!strcmp(a, "--height") && i+1<argc)      { cfg.window_height = atoi(argv[++i]); }
+        else if (!strcmp(a, "--terrain") && i+1<argc)     { cfg.terrain_dir = argv[++i]; }
+        else if (!strcmp(a, "--open") && i+1<argc)        { cfg.open_file = argv[++i]; }
+        else if (a[0] != '-')                             { cfg.open_file = a; }   // file passed by the shell
         else if (!strcmp(a, "--help")) {
             puts("AfterAction — tactical telemetry viewer & debrief");
             puts("Usage: AfterAction [options]");
@@ -133,6 +136,8 @@ int main(int argc, char** argv) {
             puts("  --addr  IP        Bind address (default 0.0.0.0)");
             puts("  --width  N        Window width  (default 1600)");
             puts("  --height N        Window height (default 900)");
+            puts("  --terrain DIR     Terrain packs (default <exe dir>/terrain)");
+            puts("  --open FILE       Open a .aar recording or .csv log at startup");
             puts("\nKeyboard shortcuts:");
             puts("  Space      Play / Pause");
             puts("  F          Follow selected entity");
