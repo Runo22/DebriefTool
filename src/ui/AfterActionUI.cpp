@@ -70,10 +70,10 @@ ImVec4 entity_type_color(uint16_t t) {
 void format_duration(uint64_t ns, char* buf, size_t n) {
     uint64_t sec  = ns / 1'000'000'000ULL;
     uint64_t ms   = (ns % 1'000'000'000ULL) / 1'000'000ULL;
-    uint64_t min  = sec / 60; sec %= 60;
-    uint64_t hour = min / 60; min %= 60;
+    uint64_t mins = sec / 60; sec %= 60;
+    uint64_t hour = mins / 60; mins %= 60;
     snprintf(buf, n, "%02llu:%02llu:%02llu.%03llu",
-             (unsigned long long)hour, (unsigned long long)min,
+             (unsigned long long)hour, (unsigned long long)mins,
              (unsigned long long)sec, (unsigned long long)ms);
 }
 

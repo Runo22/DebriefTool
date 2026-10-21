@@ -883,8 +883,9 @@ void Application::render() {
         int hy = sh / 2;
         if (Vector3Length(fwd) > 1e-3f) {
             fwd = Vector3Normalize(fwd);
-            const Vector3 far = Vector3Add(camera_.position, Vector3Scale(fwd, 1.0e6f));
-            hy = static_cast<int>(GetWorldToScreen(far, camera_).y);
+            // (not named "far": <windows.h> defines far/near as empty macros)
+            const Vector3 horizon = Vector3Add(camera_.position, Vector3Scale(fwd, 1.0e6f));
+            hy = static_cast<int>(GetWorldToScreen(horizon, camera_).y);
         }
         hy = std::clamp(hy, 0, 4 * sh);
         if (hy > 0) DrawRectangleGradientV(0, 0, sw, hy, kSkyZenith, kSkyHorizon);

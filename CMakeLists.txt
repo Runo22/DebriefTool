@@ -206,13 +206,6 @@ if(MSVC)
         /wd4201       # anonymous struct/union (used in raymath.h headers we include)
         /wd4324       # structure padded due to alignas — intentional in SPSCQueue
     )
-    # NOGDI/NOUSER prevent wingdi.h and winuser.h from being included via winsock2.h
-    # in our TUs. Those headers declare Rectangle() and DrawText() as Win32 API
-    # functions that conflict with raylib's Rectangle struct and DrawText function.
-    # WIN32_LEAN_AND_MEAN trims windows.h for our winsock-using TUs. All applied
-    # per-target so tinyfiledialogs (which needs the full windows.h incl. commdlg)
-    # and GLFW still get the headers they require.
-    target_compile_definitions(afteraction PRIVATE NOGDI NOUSER WIN32_LEAN_AND_MEAN)
 else()
     target_compile_options(afteraction PRIVATE
         -Wall
@@ -223,6 +216,15 @@ else()
         # uncomment locally for maximum performance on your build machine.
         # -march=native
     )
+endif()
+
+# NOGDI/NOUSER keep wingdi.h / winuser.h (pulled in by winsock2.h) from
+# declaring Rectangle(), DrawText(), CloseWindow()… which clash with raylib;
+# WIN32_LEAN_AND_MEAN trims the rest. Per-target so tinyfiledialogs (needs the
+# full windows.h incl. commdlg) and GLFW still get what they need. Applies to
+# MSVC and MinGW alike.
+if(WIN32)
+    target_compile_definitions(afteraction PRIVATE NOGDI NOUSER WIN32_LEAN_AND_MEAN)
 endif()
 
 # ── Platform link libs ─────────────────────────────────────────────────────────
@@ -252,7 +254,7 @@ target_include_directories(hangar PRIVATE
     ${IMGUI_DIR}
 )
 target_link_libraries(hangar PRIVATE raylib assimp imgui rlimgui)
-if(MSVC)
+if(WIN32)
     target_compile_definitions(hangar PRIVATE NOGDI NOUSER)
 endif()
 if(WIN32)
