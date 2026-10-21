@@ -23,6 +23,8 @@ namespace afteraction {
 struct AppConfig {
     uint16_t    udp_port      = 22522;
     std::string bind_addr     = "0.0.0.0";
+    bool        port_from_cli = false;    // --port / --addr override the saved settings
+    bool        addr_from_cli = false;
     int         window_width  = 1600;
     int         window_height = 900;
     std::string window_title  = "AfterAction  |  Tactical Debrief";
@@ -90,6 +92,10 @@ private:
 
     // Restarts the UDP receiver on a new bind address / port (from the UI).
     void apply_network_settings(const std::string& bind_addr, uint16_t port);
+    void start_listener();
+
+    // Write the settings when they changed (checked about once a second).
+    void autosave_settings();
 
     // After a model finishes async-loading, point existing entities of that type
     // at the new model (newly spawned entities pick it up via get_for_type).
@@ -165,6 +171,8 @@ private:
     std::vector<net::EntityState> live_states_;
 
     bool running_ = true;
+    std::string saved_config_;          // last settings text written to disk
+    double      next_autosave_check_ = 0.0;
     // Set by the UI "Clear" callback; the actual wipe runs at the top of the
     // next tick() (shallow stack, outside ECS iteration / ImGui rendering).
     bool clear_requested_ = false;

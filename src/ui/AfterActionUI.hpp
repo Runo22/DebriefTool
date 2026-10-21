@@ -3,6 +3,7 @@
 #include "../buffer/TelemetryStore.hpp"
 #include "../network/UdpReceiver.hpp"
 #include "../persistence/Recorder.hpp"
+#include "Units.hpp"
 #include <flecs.h>
 #include <imgui.h>
 #include <raylib.h>
@@ -49,6 +50,7 @@ struct UICallbacks {
     std::function<void()>               on_go_home;            // fly the camera to the home origin
     std::function<void()>               on_set_home_here;      // home origin = camera target
     std::function<void(float, float)>   on_look_at;            // centre the view on world (x,z)
+    std::function<void(const std::string&)> on_open_folder;    // reveal a folder in the OS file browser
 
     // World (x,z) → WGS-84, and terrain height (m MSL) under a world point.
     std::function<void(float, float, double*, double*)> to_geo;
@@ -65,6 +67,14 @@ struct SceneInfo {
     bool   cursor_valid = false;
     double cursor_lat = 0.0, cursor_lon = 0.0;
     float  cursor_elev = 0.0f, cursor_res = 0.0f;
+
+    // UDP listener and where files go.
+    bool   net_ok = false;
+    std::string net_status;           // "listening on 0.0.0.0:22522" / error
+    std::string net_active_addr;      // what the listener actually uses
+    uint16_t    net_active_port = 0;
+    std::string recordings_dir, config_path;
+    double last_saved_time = -1.0;    // GetTime() of the last settings autosave
 
     // Terrain data / renderer status.
     std::string terrain_status;
@@ -119,6 +129,9 @@ struct UIState {
     float chase_yaw_offset   =   0.0f;    // degrees, lateral swing around entity
     float chase_pitch_offset =  20.0f;    // degrees, 0=dead-behind, +ve=look down from above
 
+    // Camera lens
+    float camera_fov = 60.0f;             // vertical field of view, degrees
+
     // Mouse look tuning
     bool  invert_look      = true;        // RMB orbit: drag grabs the scene (inverted)
     float mouse_sensitivity = 1.0f;       // multiplier on RMB rotate speed
@@ -143,6 +156,10 @@ struct UIState {
     double origin_lat = 40.0789, origin_lon = 32.5656;
     double scene_lat  = 0.0,     scene_lon  = 0.0;
 
+    // General: interface scale (fonts + panels) and display units.
+    float     ui_scale = 1.0f;
+    UnitPrefs units;
+
     // Filled by the application every frame.
     SceneInfo scene;
 
@@ -164,11 +181,12 @@ public:
     AfterActionUI() = default;
 
     void set_callbacks(UICallbacks cbs) { cbs_ = std::move(cbs); }
+    [[nodiscard]] const UICallbacks& callbacks() const { return cbs_; }
     void set_mono_font(ImFont* f)    { mono_font_ = f; }
     void set_heading_font(ImFont* f) { heading_font_ = f; }
 
-    // Apply the colour theme / metrics once after ImGui is initialised.
-    static void apply_theme();
+    // Build the colour theme / metrics for an interface scale (1 = 100 %).
+    static void apply_theme(float scale = 1.0f);
 
     // Draw all ImGui panels.  Call every frame between rlImGuiBegin/End.
     void draw(PlaybackController& pb,
@@ -182,6 +200,7 @@ public:
 
     // Height of the bar docked at the top (3D overlays stay below it).
     static constexpr float kTopBarHeight = 44.0f;
+    [[nodiscard]] float top_bar_height() const { return kTopBarHeight * applied_scale_; }
 
 private:
     void draw_top_bar(PlaybackController& pb, const TelemetryStore& store,
@@ -197,6 +216,19 @@ private:
     void draw_minimap(const flecs::world& world);
     void draw_network(const net::ReceiverStats& stats);
     void draw_settings_window();
+    void settings_general();
+    void settings_display();
+    void settings_camera();
+    void settings_terrain();
+    void settings_network();
+    void settings_recording();
+    void settings_models();
+    void settings_shortcuts();
+
+    // Fonts at a size relative to the UI base size.
+    void push_mono();
+    void push_heading();
+    static void pop_font();
 
     float timeline_height(const TelemetryStore& store) const;
 
@@ -204,6 +236,9 @@ private:
     UICallbacks cbs_{};
     ImFont*     mono_font_    = nullptr;
     ImFont*     heading_font_ = nullptr;
+    float       applied_scale_ = 1.0f;     // ui_scale the style was last built for
+    int         settings_page_ = 0;
+    float       settings_scale_ = 0.0f;    // scale the settings window was sized for
 
     // ImPlot altitude/speed telemetry for the selected entity.
     // Ring buffer sampled on playback time (not per-frame), so the chart keeps

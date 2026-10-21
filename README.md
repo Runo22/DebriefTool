@@ -274,8 +274,24 @@ The app ships with coloured procedural shapes as built-in defaults. To load prop
 | **4** | Rewind (×−1) |
 | **F** | Focus / unfocus selected track |
 | **G** | Chase camera on selected track |
+| **H** | Fly to the home position |
 | **R** | Toggle Line / Ribbon trail mode |
-| **Esc** | Quit |
+| **Esc** | Close Settings, then clear the selection |
+| **Ctrl+Q** | Quit |
+
+---
+
+## Settings
+
+The gear button opens **Settings** (General · Display · Camera · Terrain ·
+Network · Recording · Models · Shortcuts). Changes apply immediately and are
+saved automatically to `afteraction_config.yaml` next to the executable.
+
+- **General** — interface scale (75–200 %, for high-DPI screens) and units:
+  altitude ft / m, speed kt / km/h / m/s, coordinates DMS / DDM / decimal.
+- **Network** — bind address and port with a live listener status; a
+  `--port` / `--addr` on the command line overrides them for that run.
+- **Recording** — dashcam length and the recordings folder.
 
 ---
 

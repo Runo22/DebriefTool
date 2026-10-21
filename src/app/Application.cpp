@@ -80,7 +80,7 @@ std::string Application::config_path() const {
 Application::~Application() {
     if (!cfg_.demo_mode) udp_receiver_.stop();
     recorder_.stop();
-    ConfigManager::save_config(ui_.state(), config_path());
+    ConfigManager::save_text(config_path(), ConfigManager::to_yaml(ui_.state()));
     // Free GL resources (models/meshes) while the GL context is still alive.
     // The AssetManager member destructor runs after this body — i.e. after
     // CloseWindow() has destroyed the context — so unloading there would make GL
@@ -100,6 +100,7 @@ void Application::init_window() {
     SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
     InitWindow(cfg_.window_width, cfg_.window_height, cfg_.window_title.c_str());
     SetTargetFPS(cfg_.target_fps);
+    SetExitKey(KEY_NULL);   // Esc closes panels / clears the selection; Ctrl+Q quits
 
     // Window / taskbar icon — prefer the rounded, transparent-corner variant;
     // fall back to the square one. GLFW copies the pixels on SetWindowIcon, so
@@ -341,12 +342,32 @@ void Application::init_ui_callbacks() {
         }
         ConfigManager::save_model_manifest(asset_path("models.yaml"), specs);
     };
+    cbs.on_open_folder = [](const std::string& dir) {
+        if (!dir.empty()) OpenURL(dir.c_str());
+    };
     ui_.set_callbacks(std::move(cbs));
 
-    // Seed the network panel fields from the active configuration.
-    ui_.state().listen_port = cfg_.udp_port;
-    snprintf(ui_.state().bind_addr, sizeof(ui_.state().bind_addr), "%s",
-             cfg_.bind_addr.c_str());
+    // Listener address: the saved settings, unless given on the command line.
+    auto& st = ui_.state();
+    if (cfg_.port_from_cli) st.listen_port = cfg_.udp_port;
+    else                    cfg_.udp_port = st.listen_port;
+    if (cfg_.addr_from_cli) snprintf(st.bind_addr, sizeof(st.bind_addr), "%s", cfg_.bind_addr.c_str());
+    else                    cfg_.bind_addr = st.bind_addr;
+
+    st.scene.recordings_dir = recordings_dir();
+    st.scene.config_path = config_path();
+    saved_config_ = ConfigManager::to_yaml(st);
+}
+
+void Application::autosave_settings() {
+    if (GetTime() < next_autosave_check_) return;
+    next_autosave_check_ = GetTime() + 1.0;
+    std::string now = ConfigManager::to_yaml(ui_.state());
+    if (now == saved_config_) return;
+    if (ConfigManager::save_text(config_path(), now)) {
+        saved_config_ = std::move(now);
+        ui_.state().scene.last_saved_time = GetTime();
+    }
 }
 
 void Application::clear_all_entities() {
@@ -470,16 +491,33 @@ void Application::repoint_entities_of_type(uint16_t type) {
 }
 
 void Application::apply_network_settings(const std::string& bind_addr, uint16_t port) {
-    if (cfg_.demo_mode) return;   // demo has no live socket
-    udp_receiver_.stop();
     cfg_.bind_addr = bind_addr;
     cfg_.udp_port  = port;
-    if (udp_receiver_.start(cfg_.bind_addr, cfg_.udp_port))
-        TraceLog(LOG_INFO, "UDP receiver now listening on %s:%u",
+    start_listener();
+}
+
+void Application::start_listener() {
+    SceneInfo& sc = ui_.state().scene;
+    if (cfg_.demo_mode) {
+        sc.net_ok = false;
+        sc.net_status = "demo mode: live UDP is off";
+        return;
+    }
+    udp_receiver_.stop();
+    sc.net_active_addr = cfg_.bind_addr;
+    sc.net_active_port = cfg_.udp_port;
+    char buf[128];
+    if (udp_receiver_.start(cfg_.bind_addr, cfg_.udp_port)) {
+        snprintf(buf, sizeof(buf), "listening on %s:%u", cfg_.bind_addr.c_str(), cfg_.udp_port);
+        sc.net_ok = true;
+        TraceLog(LOG_INFO, "UDP receiver %s", buf);
+    } else {
+        snprintf(buf, sizeof(buf), "cannot listen on %s:%u (address in use or invalid?)",
                  cfg_.bind_addr.c_str(), cfg_.udp_port);
-    else
-        TraceLog(LOG_WARNING, "Failed to bind UDP %s:%u",
-                 cfg_.bind_addr.c_str(), cfg_.udp_port);
+        sc.net_ok = false;
+        TraceLog(LOG_WARNING, "UDP receiver %s", buf);
+    }
+    sc.net_status = buf;
 }
 
 // ── Main loop ─────────────────────────────────────────────────────────────────
@@ -491,8 +529,7 @@ void Application::run() {
     init_terrain();
     init_ui_callbacks();
 
-    if (!cfg_.demo_mode)
-        udp_receiver_.start(cfg_.bind_addr, cfg_.udp_port);
+    start_listener();
 
     if (!cfg_.open_file.empty()) {
         std::string ext = std::filesystem::path(cfg_.open_file).extension().string();
@@ -532,6 +569,7 @@ void Application::tick(float dt) {
     update_scene_info();
     update_minimap();
     render();
+    autosave_settings();
 }
 
 // ── Coordinate + orientation conversion ──────────────────────────────────────
@@ -1077,13 +1115,12 @@ void Application::render_3d() {
 
                 const char* lbl = meta.callsign[0]
                     ? meta.callsign : TextFormat("#%u", meta.entity_id);
-                // Altitude shown in feet (primary), with metres in parentheses.
-                int alt_ft = (int)(pos.v.y * 3.28084f);
-                int alt_m  = (int)(pos.v.y);
-                const char* alt = (alt_ft > 50) ? TextFormat("%d ft (%d m)", alt_ft, alt_m)
-                                                : nullptr;
+                // Altitude in the chosen unit, the other one in parentheses.
+                const UnitPrefs& u = ui_.state().units;
+                const char* alt = TextFormat("%.0f %s (%.0f %s)", u.alt_value(pos.v.y), u.alt_suffix(),
+                                             u.alt_value_alt(pos.v.y), u.alt_suffix_alt());
 
-                const float fs = 17.0f, afs = 14.0f;
+                const float fs = 17.0f * ui_.state().ui_scale, afs = 14.0f * ui_.state().ui_scale;
                 int tx = (int)sp.x + 9, ty = (int)sp.y - 8;
                 int wlbl = (int)MeasureTextEx(label_font_, lbl, fs, 0.5f).x;
                 int walt = alt ? (int)MeasureTextEx(label_font_, alt, afs, 0.5f).x : 0;
@@ -1107,12 +1144,13 @@ void Application::render_3d() {
 
     if (cfg_.demo_mode) {
         // Below the toolbar row so it never overlaps the transport buttons.
-        int bw = 440, bh = 28, bx = GetScreenWidth()/2 - 220,
-            by = static_cast<int>(AfterActionUI::kTopBarHeight) + 8;
+        const float k = ui_.state().ui_scale;
+        int bw = static_cast<int>(440 * k), bh = static_cast<int>(28 * k), bx = GetScreenWidth()/2 - bw / 2,
+            by = static_cast<int>(ui_.top_bar_height()) + 8;
         DrawRectangle(bx, by, bw, bh, {0,0,0,160});
         DrawRectangleLines(bx, by, bw, bh, {255,180,0,100});
         DrawTextEx(label_font_, "DEMO  \xe2\x80\x94  scripted scenario at Ak\xc4\xb1nc\xc4\xb1 (live UDP off)",
-                   { (float)bx + 10, (float)by + 4 }, 17.0f, 0.5f, {255,200,0,230});
+                   { (float)bx + 10 * k, (float)by + 4 * k }, 17.0f * k, 0.5f, {255,200,0,230});
     }
 }
 
@@ -1125,7 +1163,16 @@ void Application::render_ui() {
 
 // ── Input ─────────────────────────────────────────────────────────────────────
 void Application::handle_input(float /*dt*/) {
-    if (IsKeyPressed(KEY_ESCAPE)) running_ = false;
+    const bool ctrl = IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+    if (ctrl && IsKeyPressed(KEY_Q)) running_ = false;
+    if (IsKeyPressed(KEY_ESCAPE)) {   // close the settings window first, then deselect
+        auto& st = ui_.state();
+        if (st.show_settings_window) st.show_settings_window = false;
+        else if (st.selected_entity.is_valid()) { st.selected_entity = {}; st.camera_mode = 0; }
+    }
+    // Keyboard shortcuts below are ignored while typing into a text field.
+    if (ImGui::GetIO().WantTextInput) return;
+    if (IsKeyPressed(KEY_H) && ui_.callbacks().on_go_home) ui_.callbacks().on_go_home();
 
     if (IsKeyPressed(KEY_SPACE)) {
         if (playback_.state() == PlaybackState::Playing) playback_.pause();
@@ -1344,6 +1391,8 @@ void Application::draw_terrain() {
 void Application::update_camera_state(float dt) {
     auto& state = ui_.state();
     const bool ui_wants_mouse = ImGui::GetIO().WantCaptureMouse;
+    const bool typing = ImGui::GetIO().WantTextInput;
+    camera_.fovy = std::clamp(state.camera_fov, 20.0f, 110.0f);
 
     // ── Scroll wheel: zoom ────────────────────────────────────────────────────
     if (!ui_wants_mouse) {
@@ -1396,7 +1445,7 @@ void Application::update_camera_state(float dt) {
 
     // ── F key: toggle focus on selected entity ────────────────────────────────
     flecs::entity sel = state.selected_entity;
-    if (IsKeyPressed(KEY_F) && sel.is_valid() && world_.is_alive(sel)) {
+    if (!typing && IsKeyPressed(KEY_F) && sel.is_valid() && world_.is_alive(sel)) {
         if (state.camera_mode >= 1) {
             // Return to free orbit, pivot point on where entity was
             state.camera_mode = 0;
@@ -1408,7 +1457,7 @@ void Application::update_camera_state(float dt) {
     }
 
     // ── G key: toggle chase cam ───────────────────────────────────────────────
-    if (IsKeyPressed(KEY_G) && sel.is_valid() && world_.is_alive(sel)) {
+    if (!typing && IsKeyPressed(KEY_G) && sel.is_valid() && world_.is_alive(sel)) {
         state.camera_mode = (state.camera_mode == 2) ? 0 : 2;
         if (state.camera_mode == 2) {
             state.chase_yaw_offset   = 0.0f;
@@ -1492,7 +1541,7 @@ void Application::update_camera_state(float dt) {
         Vector3 right   = { cosf(yaw_rad), 0.0f, -sinf(yaw_rad) };
 
         // WASD keyboard pan — speed scales with zoom level
-        if (!ui_wants_mouse) {
+        if (!typing) {
             float pan_speed = state.camera_distance * 0.45f * dt;
             if (IsKeyDown(KEY_LEFT_SHIFT)) pan_speed *= 4.0f;
 

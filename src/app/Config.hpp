@@ -20,6 +20,10 @@ class ConfigManager {
 public:
     static void load_config(UIState& state, const std::string& path = "afteraction_config.yaml");
     static void save_config(const UIState& state, const std::string& path = "afteraction_config.yaml");
+    // The persisted settings as YAML text (also used to detect changes for autosave).
+    static std::string to_yaml(const UIState& state);
+    // Atomically write text to a file (temp file + rename).
+    static bool save_text(const std::string& path, const std::string& text);
 
     // Parse the model manifest. Returns empty if the file is missing/invalid.
     static std::vector<ModelSpec> load_model_manifest(const std::string& path = "assets/models.yaml");

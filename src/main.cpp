@@ -121,8 +121,8 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         const char* a = argv[i];
         if (!strcmp(a, "--demo"))                         { cfg.demo_mode = true; }
-        else if (!strcmp(a, "--port") && i+1<argc)        { cfg.udp_port = (uint16_t)atoi(argv[++i]); }
-        else if (!strcmp(a, "--addr") && i+1<argc)        { cfg.bind_addr = argv[++i]; }
+        else if (!strcmp(a, "--port") && i+1<argc)        { cfg.udp_port = (uint16_t)atoi(argv[++i]); cfg.port_from_cli = true; }
+        else if (!strcmp(a, "--addr") && i+1<argc)        { cfg.bind_addr = argv[++i]; cfg.addr_from_cli = true; }
         else if (!strcmp(a, "--width") && i+1<argc)       { cfg.window_width  = atoi(argv[++i]); }
         else if (!strcmp(a, "--height") && i+1<argc)      { cfg.window_height = atoi(argv[++i]); }
         else if (!strcmp(a, "--terrain") && i+1<argc)     { cfg.terrain_dir = argv[++i]; }
