@@ -480,11 +480,7 @@ void Application::repoint_entities_of_type(uint16_t type) {
     if (!e) return;
     world_.query<ecs::EntityMeta, ecs::RenderModel>()
         .each([&](ecs::EntityMeta& meta, ecs::RenderModel& rm) {
-            if (meta.type != type) return;
-            rm.model_ptr = const_cast<Model*>(&e->model);
-            rm.tint      = e->tint;
-            rm.scale     = e->scale;
-            rm.base_rot  = e->base_rot;
+            if (meta.type == type) rm.entry = e;
         });
     TraceLog(LOG_INFO, "Re-pointed live entities of type %u to new model", type);
 }
@@ -664,10 +660,7 @@ flecs::entity Application::get_or_create_entity(const net::EntityState& state) {
     const auto* entry = assets_.get_for_type(state.entity_type);
 
     ecs::RenderModel rm{};
-    rm.model_ptr = const_cast<Model*>(&entry->model); // AssetManager owns the model
-    rm.tint      = entry->tint;
-    rm.scale     = entry->scale;
-    rm.base_rot  = entry->base_rot;
+    rm.entry = entry;   // AssetManager owns the model
 
     // Per-type trail color for visual identification
     ecs::Trail trail_init{};
@@ -678,6 +671,7 @@ flecs::entity Application::get_or_create_entity(const net::EntityState& state) {
         case net::TYPE_AAA:     trail_init.color = { 80, 180,  80, 180 }; break; // green
         case net::TYPE_GROUND:  trail_init.color = {220, 140,  40, 180 }; break; // amber
         case net::TYPE_HELO:    trail_init.color = { 80, 220, 100, 200 }; break; // lime
+        case net::TYPE_UAV:     trail_init.color = {200, 120, 255, 200 }; break; // violet
         case net::TYPE_SHIP:    trail_init.color = {160, 160, 220, 180 }; break; // lavender
         default:                trail_init.color = {  0, 200, 255, 180 }; break; // cyan
     }
@@ -947,7 +941,11 @@ void Application::render_3d() {
         rlEnd();
     }
 
-    // 2. Entities
+    // 2. Entities. Models use the shared lit shader (same sun and fog as the
+    //    terrain) and are drawn two-sided, so flush and turn culling off once.
+    assets_.set_frame_uniforms(camera_.position, kSunDir, tstyle.fog, tstyle.fog_start, tstyle.fog_end);
+    rlDrawRenderBatchActive();
+    rlDisableBackfaceCulling();
     world_.query<const ecs::EntityMeta,
                   const ecs::Position,
                   const ecs::Rotation,
@@ -962,60 +960,49 @@ void Application::render_3d() {
                   const ecs::Trail& trail,
                   const ecs::Velocity& vel)
         {
-            if (!meta.active) return;
+            if (!meta.active || !rm.entry) return;
+            const ModelEntry& me = *rm.entry;
 
             // Apply altitude exaggeration to render position
             Vector3 rp = exag_pos(pos.v);  // rendered position (exaggerated Y)
 
-            Quaternion q = rm.model_ptr
-                ? QuaternionMultiply(rot.q, rm.base_rot) : rot.q;
-            Vector3 axis{ 0, 1, 0 };
-            float angle_rad = 0.0f;
-            QuaternionToAxisAngle(q, &axis, &angle_rad);
-
-            const float ds = display_scale(rp);
-            float final_scale = rm.scale * ds;
-            if (rm.model_ptr) {
-                DrawModelEx(*rm.model_ptr, rp,
-                            axis, angle_rad * RAD2DEG,
-                            {final_scale, final_scale, final_scale}, rm.tint);
-                DrawModelWiresEx(*rm.model_ptr, rp,
-                                 axis, angle_rad * RAD2DEG,
-                                 {final_scale, final_scale, final_scale},
-                                 ColorAlpha(rm.tint, 0.35f));
-            } else {
-                float sz = 6.0f * ds;
-                DrawCylinder(rp, 0.0f, sz, sz * 1.5f, 4, {0, 220, 255, 255});
-                DrawCylinderWires(rp, 0.0f, sz, sz * 1.5f, 4, {200, 240, 255, 200});
-            }
-
             // Ground height directly beneath this entity (so markers/drop-lines
             // track terrain relief instead of sinking into hills).
             const float gh = terrain_height_at(rp.x, rp.z) * exag;
+
+            const float len  = display_length(rp, me.length);   // on-screen size (m)
+            const float grow = len / me.length;
+            draw_entity_model(me, rp, QuaternionMultiply(rot.q, me.base_rot), me.scale * grow);
+            draw_contact_shadow(rp, gh, len);
 
             // Selection highlight (using exaggerated position rp).
             // Deliberately does NOT draw a wire sphere around the model — that
             // obscured the body and made rotation hard to read. Instead we use a
             // floating chevron above the entity plus ground rings on the terrain,
             // both of which leave the model fully visible.
+            // In chase view the camera sits right behind the track, so the chevron
+            // would hang in front of it — rings only.
+            const bool chasing = ui_.state().camera_mode == 2;
             if (ui_.state().selected_entity == e) {
-                float mk    = 12.0f * ds;   // marker size follows the on-screen model size
+                float mk    = 0.55f * len;   // marker size follows the on-screen model size
 
                 // Floating chevron (diamond) hovering above the model.
                 float bob  = sinf((float)GetTime() * 3.0f) * mk * 0.3f;
                 Vector3 dp = {rp.x, rp.y + mk * 2.5f + bob, rp.z};
                 float chev = mk * 0.6f;
-                DrawCylinderWires(dp, 0.f, chev, chev*1.4f, 4, YELLOW);
-                DrawCylinderWires({dp.x, dp.y - chev*1.4f, dp.z}, chev, 0.f, chev*1.4f, 4, YELLOW);
+                if (!chasing) {
+                    DrawCylinderWires(dp, 0.f, chev, chev*1.4f, 4, YELLOW);
+                    DrawCylinderWires({dp.x, dp.y - chev*1.4f, dp.z}, chev, 0.f, chev*1.4f, 4, YELLOW);
 
-                // Bright vertical tie-line from the chevron down to the terrain.
-                DrawLine3D({rp.x, gh, rp.z}, dp, {255, 220, 0, 130});
+                    // Bright vertical tie-line from the chevron down to the terrain.
+                    DrawLine3D({rp.x, gh, rp.z}, dp, {255, 220, 0, 130});
+                }
 
                 // Ground rings that FOLLOW the terrain relief (a flat circle was
                 // half-buried on slopes).
-                draw_ground_ring(rp.x, rp.z, 25.f * ds,  {255,220,0,160});
-                draw_ground_ring(rp.x, rp.z, 50.f * ds,  {255,220,0,80});
-                draw_ground_ring(rp.x, rp.z, 100.f * ds, {255,220,0,35});
+                draw_ground_ring(rp.x, rp.z, 1.2f * len, {255,220,0,160});
+                draw_ground_ring(rp.x, rp.z, 2.4f * len, {255,220,0,80});
+                draw_ground_ring(rp.x, rp.z, 4.8f * len, {255,220,0,35});
             }
 
             // Altitude drop line from the terrain up to the entity position.
@@ -1030,7 +1017,7 @@ void Application::render_3d() {
                 Vector3 ve  = { vel.v.x, vel.v.y * exag, vel.v.z };
                 Vector3 tip = Vector3Add(rp, Vector3Scale(ve, 5.0f));
                 DrawLine3D(rp, tip, {0, 255, 80, 200});
-                DrawSphere(tip, final_scale * 0.5f, {0, 255, 80, 180});
+                DrawSphere(tip, len * 0.03f, {0, 255, 80, 180});
             }
 
             // Trail — copy ring buffer with exaggerated Y
@@ -1042,6 +1029,8 @@ void Application::render_3d() {
             }
         });
 
+    rlDrawRenderBatchActive();
+    rlEnableBackfaceCulling();
     EndMode3D();
     rlSetClipPlanes(0.01f, 1000.0f);
 
@@ -1168,7 +1157,9 @@ void Application::handle_input(float /*dt*/) {
                 // Hit-test against the RENDERED position (altitude exaggeration
                 // applied) — otherwise clicks miss whenever exaggeration > 1.
                 Vector3 rp = { pos.v.x, pos.v.y * exag, pos.v.z };
-                float pick_r = 30.0f * display_scale(rp);
+                const ecs::RenderModel* rm = e.try_get<ecs::RenderModel>();
+                const float length = rm && rm->entry ? rm->entry->length : 20.0f;
+                float pick_r = std::max(1.4f * display_length(rp, length), 15.0f);
                 Vector3 to_center = Vector3Subtract(rp, ray.position);
                 float t = Vector3DotProduct(to_center, ray.direction);
                 if (t < 0) return;
@@ -1189,10 +1180,58 @@ void Application::handle_input(float /*dt*/) {
 }
 
 // Models are drawn at true size up close and grow with distance so a track
-// stays readable from far away (the "Size" slider sets how much).
-float Application::display_scale(Vector3 render_pos) const {
+// stays readable from far away (the "Size" slider sets how much). The minimum
+// is a length, so a missile grows as early as a fighter while a 100 m ship
+// keeps its true size until it is far away.
+float Application::display_length(Vector3 render_pos, float length) const {
     const float d = Vector3Distance(render_pos, camera_.position);
-    return std::max(1.0f, ui_.state().entity_3d_scale * d / 400.0f);
+    return std::max(length, ui_.state().entity_3d_scale * d * 0.05f);
+}
+
+void Application::draw_entity_model(const ModelEntry& m, Vector3 rp, Quaternion rot, float scale) const {
+    Vector3 axis{ 0, 1, 0 };
+    float angle = 0.0f;
+    QuaternionToAxisAngle(rot, &axis, &angle);
+    const Vector3 sv{ scale, scale, scale };
+    DrawModelEx(m.model, rp, axis, angle * RAD2DEG, sv, m.tint);
+
+    // Rotors / propellers: spin about their own axis at the hub, then follow the body.
+    const double t = GetTime();
+    for (const Spinner& sp : m.spinners) {
+        const float spin = static_cast<float>(std::fmod(t * sp.rev_per_sec, 1.0) * 2.0 * PI);
+        Model part = sp.model;
+        part.transform = MatrixMultiply(MatrixRotate(sp.axis, spin), MatrixTranslate(sp.hub.x, sp.hub.y, sp.hub.z));
+        DrawModelEx(part, rp, axis, angle * RAD2DEG, sv, m.tint);
+    }
+}
+
+// Soft dark disc on the ground under a model: anchors vehicles to the terrain
+// and shows height for low flyers; fades out with height above ground.
+void Application::draw_contact_shadow(Vector3 rp, float ground_y, float size) const {
+    const float agl  = rp.y - ground_y;
+    const float fade = 1.0f - std::clamp(agl / (size * 6.0f), 0.0f, 1.0f);
+    if (fade <= 0.0f) return;
+    const float exag = ui_.state().altitude_exaggerate;
+    const float r    = size * 0.55f;
+    const float lift = std::max(0.3f, Vector3Distance(rp, camera_.position) * 0.0015f);
+    constexpr int kSegs = 24;
+    Vector3 ring[kSegs];
+    for (int i = 0; i < kSegs; ++i) {
+        const float a = static_cast<float>(i) / kSegs * 2.0f * PI;
+        const float x = rp.x + cosf(a) * r, z = rp.z + sinf(a) * r;
+        ring[i] = { x, terrain_height_at(x, z) * exag + lift, z };
+    }
+    const Vector3 c{ rp.x, ground_y + lift, rp.z };
+    const unsigned char a_in = static_cast<unsigned char>(110.0f * fade);
+    rlBegin(RL_TRIANGLES);
+    for (int i = 0; i < kSegs; ++i) {
+        const Vector3& p0 = ring[i];
+        const Vector3& p1 = ring[(i + 1) % kSegs];
+        rlColor4ub(0, 0, 0, a_in); rlVertex3f(c.x, c.y, c.z);
+        rlColor4ub(0, 0, 0, 0);    rlVertex3f(p1.x, p1.y, p1.z);
+        rlColor4ub(0, 0, 0, 0);    rlVertex3f(p0.x, p0.y, p0.z);
+    }
+    rlEnd();
 }
 
 float Application::terrain_height_at(float wx, float wz) const {

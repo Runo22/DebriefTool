@@ -90,6 +90,7 @@ Python format string: `"<IHB32sdddddddQ"`
 | 4     | `TYPE_GROUND`  | Ground unit  |
 | 5     | `TYPE_HELO`    | Helicopter   |
 | 6     | `TYPE_SHIP`    | Ship         |
+| 7     | `TYPE_UAV`     | UAV          |
 
 ---
 

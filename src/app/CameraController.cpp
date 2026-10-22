@@ -1,5 +1,6 @@
 #include "CameraController.hpp"
 #include "../ecs/Components.hpp"
+#include "../render/AssetManager.hpp"
 #if defined(__GNUC__)
 #  pragma GCC diagnostic push
 #  pragma GCC diagnostic ignored "-Wmissing-field-initializers"   // raymath.h
@@ -53,7 +54,10 @@ void CameraController::update(Camera3D& cam, UIState& st, float dt) {
         const Vector3 fwd = Vector3Normalize(Vector3RotateByQuaternion({ 0, 0, -1 }, q));
         const Vector3 up  = Vector3Normalize(Vector3RotateByQuaternion({ 0, 1, 0 }, q));
         const Vector3 rgt = Vector3CrossProduct(fwd, up);
-        const float base = std::max(200.0f, st.camera_distance * 0.08f);
+        // Close enough to see the model (a few lengths behind), farther as the user zooms out.
+        const ecs::RenderModel* rm = sel.try_get<ecs::RenderModel>();
+        const float length = rm && rm->entry ? rm->entry->length : 20.0f;
+        const float base = std::max(length * 2.5f, st.camera_distance * 0.08f);
 
         // Swing the "behind" vector by the user's chase offsets (RMB drag).
         Vector3 back = Vector3Negate(fwd);

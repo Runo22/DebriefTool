@@ -128,15 +128,19 @@ All scalar fields are now **doubles** (previously some were 32-bit floats), and 
 
 ### Entity types
 
-| Value | Meaning | Default shape |
+Built-in models are at real size and loosely modelled on Turkish platforms
+(override any of them with your own glTF/FBX/OBJ in Settings → Models):
+
+| Value | Meaning | Built-in model |
 |---|---|---|
-| 0 | Unknown | White cube |
-| 1 | Jet aircraft | Blue cone |
-| 2 | Missile | Red cylinder |
-| 3 | AAA / gun | Dark cylinder |
-| 4 | Ground target | Orange box |
-| 5 | Helicopter | Green sphere |
-| 6 | Ship | Grey box |
+| 0 | Unknown | Diamond marker |
+| 1 | Jet aircraft | KAAN-style fighter |
+| 2 | Missile | Air-to-air missile |
+| 3 | AAA / gun | KORKUT-style tracked twin-gun vehicle |
+| 4 | Ground target | 6×6 armoured vehicle |
+| 5 | Helicopter | T129 ATAK-style (spinning rotors) |
+| 6 | Ship | MİLGEM (Ada-class) corvette |
+| 7 | UAV | ANKA-style MALE UAV (spinning propeller) |
 
 ### C++ sender example
 

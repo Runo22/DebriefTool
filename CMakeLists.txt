@@ -248,7 +248,7 @@ endif()
 # ── Hangar — standalone model preview tool ─────────────────────────────────────
 # Reuses the app's AssetManager (same FBX/OBJ/glTF import + same draw math) so
 # previews match exactly. Lives in tools/ so it isn't swept into afteraction.
-add_executable(hangar tools/hangar.cpp src/render/AssetManager.cpp)
+add_executable(hangar tools/hangar.cpp src/render/AssetManager.cpp src/render/ProceduralModels.cpp)
 target_include_directories(hangar PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${IMGUI_DIR}

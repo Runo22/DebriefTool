@@ -78,6 +78,7 @@ enum EntityTypeId : uint16_t {
     TYPE_GROUND  = 4,
     TYPE_HELO    = 5,
     TYPE_SHIP    = 6,
+    TYPE_UAV     = 7,
 };
 
 inline constexpr uint8_t kMagic[4]    = {'D','B','F','1'};

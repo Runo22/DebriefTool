@@ -63,7 +63,11 @@ private:
     // hidden or the point is outside DEM coverage. Multiply by the vertical
     // scale for rendering.
     float terrain_height_at(float wx, float wz) const;
-    float display_scale(Vector3 render_pos) const;
+    // On-screen length (m) of a model of real length `length` at render_pos:
+    // true size up close, never smaller than a distance-based minimum.
+    float display_length(Vector3 render_pos, float length) const;
+    void draw_entity_model(const ModelEntry& m, Vector3 rp, Quaternion rot, float scale) const;
+    void draw_contact_shadow(Vector3 rp, float ground_y, float size) const;
 
     // A ground ring that follows the terrain relief (vertices lifted to terrain
     // height) — used for selection/altitude markers so they don't sink into hills.

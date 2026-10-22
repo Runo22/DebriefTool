@@ -307,7 +307,7 @@ std::vector<unsigned char> TerrainSystem::render_map(const GeoFrame& frame, floa
     frame.to_geo(cx - range * 0.5 - sp, cz - range * 0.5 - sp, &north, &west);
     db_.sample_grid(north, west, sp / frame.m_per_deg_lat(), sp / frame.m_per_deg_lon(), G, G,
                     h.data(), 0.0f, static_cast<float>(sp * 0.5));
-    const Vector3 sun = Vector3Normalize({ -0.55f, 0.75f, -0.45f });
+    const Vector3 sun = kSunDir;
     for (int j = 0; j < size; ++j) {
         for (int i = 0; i < size; ++i) {
             auto H = [&](int a, int b) { return h[size_t(b + 1) * G + size_t(a + 1)]; };
@@ -504,8 +504,7 @@ void TerrainSystem::draw(const Camera3D& cam, const TerrainStyle& style) {
     const float grid[2] = { style.grid_spacing, grid_on ? (style.look == TerrainLook::Grid ? 0.9f : 0.45f) : 0.0f };
     const float contour[2] = { style.contour_step, style.look == TerrainLook::Contours ? 1.0f : 0.0f };
     const int   look = style.look == TerrainLook::Grid ? 1 : 2;
-    const Vector3 sun = Vector3Normalize({ -0.55f, 0.75f, -0.45f });
-    const float sun_v[3] = { sun.x, sun.y, sun.z };
+    const float sun_v[3] = { kSunDir.x, kSunDir.y, kSunDir.z };
     SetShaderValue(shader_, loc_cam_, cam_pos, SHADER_UNIFORM_VEC3);
     SetShaderValue(shader_, loc_fog_col_, fog_col, SHADER_UNIFORM_VEC4);
     SetShaderValue(shader_, loc_fog_rng_, fog_rng, SHADER_UNIFORM_VEC2);

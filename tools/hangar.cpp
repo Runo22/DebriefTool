@@ -7,13 +7,16 @@
 //  scale and base-rotation, then copy the generated snippet into
 //  assets/models.yaml.
 //
-//  Usage:  hangar <model.fbx|obj|glb> [scale]
+//  Usage:  hangar [model.fbx|obj|glb] [scale]
+//          (no file: browse the built-in models)
 // ─────────────────────────────────────────────────────────────────────────────
 #include "render/AssetManager.hpp"
 #include <raylib.h>
 #include <raymath.h>
+#include <rlgl.h>
 #include <rlImGui.h>
 #include <imgui.h>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -21,12 +24,7 @@
 using namespace afteraction;
 
 int main(int argc, char** argv) {
-    if (argc < 2) {
-        printf("AfterAction Hangar — model preview\n");
-        printf("Usage: hangar <model.fbx|obj|glb> [scale]\n");
-        return 1;
-    }
-    const std::string path = argv[1];
+    const std::string path = argc >= 2 ? argv[1] : "";
     float ui_scale = (argc >= 3) ? (float)atof(argv[2]) : 1.0f;
 
     SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_WINDOW_RESIZABLE);
@@ -35,20 +33,27 @@ int main(int argc, char** argv) {
     rlImGuiSetup(true);
     ImGui::GetIO().IniFilename = nullptr;
 
-    // Same import path as the app (synchronous is fine for a preview tool).
+    // Same import path and shader as the app (synchronous is fine for a preview tool).
     AssetManager assets;
-    const bool ok = assets.load("preview", path, 1.0f);
-    if (ok) assets.map_type(0, "preview");
-    const ModelEntry* me = ok ? assets.get_for_type(0) : nullptr;
+    assets.init_procedural();
+    const bool builtin = path.empty();
+    const bool ok = builtin || assets.load("preview", path, 1.0f);
+    if (ok && !builtin) assets.map_type(0, "preview");
+    static const char* kTypeNames[] = { "Unknown", "Jet", "Missile", "AAA", "Ground", "Helo", "Ship", "UAV" };
+    int builtin_type = net::TYPE_JET;
+    const ModelEntry* me = nullptr;
 
     Vector3 dim{1,1,1};
     float model_radius = 1.0f;
-    if (ok) {
+    auto select = [&](uint16_t type) {
+        me = ok ? assets.get_for_type(type) : nullptr;
+        if (!me) return;
         BoundingBox bb = GetModelBoundingBox(me->model);
         dim = { bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z };
         model_radius = Vector3Length(dim) * 0.5f;
         if (model_radius < 1e-3f) model_radius = 1.0f;
-    }
+    };
+    select(builtin ? static_cast<uint16_t>(builtin_type) : 0);
 
     Camera3D cam{};
     cam.target     = { 0, dim.y * 0.25f, 0 };
@@ -61,7 +66,7 @@ int main(int argc, char** argv) {
     // Preview controls — mirror the manifest fields.
     float yaw = 0, pitch = 0, roll = 0;   // base_rot, degrees
     float tint[3] = {1, 1, 1};
-    bool  wire = true, spin = true, grid = true, axes = true;
+    bool  spin = true, grid = true, axes = true;
     const float kSceneScale = 30.0f;      // AfterAction's default Scene Scale
 
     while (!WindowShouldClose()) {
@@ -105,10 +110,20 @@ int main(int argc, char** argv) {
             DrawLine3D({0,0,0}, {L,0,0}, {255,120,120,255});  // right   = +X (red)
         }
         if (me) {
-            DrawModelEx(me->model, {0,0,0}, axis, ang * RAD2DEG, {ui_scale,ui_scale,ui_scale}, col);
-            if (wire)
-                DrawModelWiresEx(me->model, {0,0,0}, axis, ang * RAD2DEG,
-                                 {ui_scale,ui_scale,ui_scale}, ColorAlpha(col, 0.35f));
+            assets.set_frame_uniforms(cam.position, Vector3Normalize({ -0.55f, 0.75f, -0.45f }),
+                                      BLACK, 1e9f, 2e9f);
+            rlDrawRenderBatchActive();
+            rlDisableBackfaceCulling();
+            const Vector3 sv{ ui_scale, ui_scale, ui_scale };
+            DrawModelEx(me->model, {0,0,0}, axis, ang * RAD2DEG, sv, col);
+            for (const Spinner& sp : me->spinners) {
+                Model part = sp.model;
+                const float a = (float)fmod(GetTime() * sp.rev_per_sec, 1.0) * 2.0f * PI;
+                part.transform = MatrixMultiply(MatrixRotate(sp.axis, a),
+                                                MatrixTranslate(sp.hub.x, sp.hub.y, sp.hub.z));
+                DrawModelEx(part, {0,0,0}, axis, ang * RAD2DEG, sv, col);
+            }
+            rlEnableBackfaceCulling();
         }
         EndMode3D();
 
@@ -116,7 +131,18 @@ int main(int argc, char** argv) {
         ImGui::SetNextWindowPos({10,10}, ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize({340, 470}, ImGuiCond_FirstUseEver);
         ImGui::Begin("Model Preview");
-        if (!ok) {
+        if (builtin) {
+            ImGui::TextDisabled("Built-in models (pass a file to preview your own):");
+            if (ImGui::Combo("Type", &builtin_type, kTypeNames, IM_ARRAYSIZE(kTypeNames))) {
+                select(static_cast<uint16_t>(builtin_type));
+                cam_dist   = model_radius * 3.0f;
+                cam.target = { 0, dim.y * 0.25f, 0 };
+            }
+            ImGui::Text("Size: %.1f x %.1f x %.1f m", dim.x, dim.y, dim.z);
+            ImGui::Checkbox("Spin", &spin); ImGui::SameLine();
+            ImGui::Checkbox("Grid", &grid); ImGui::SameLine();
+            ImGui::Checkbox("Axes", &axes);
+        } else if (!ok) {
             ImGui::TextColored({1,0.4f,0.3f,1}, "FAILED to load:");
             ImGui::TextWrapped("%s", path.c_str());
             ImGui::TextDisabled("Check the path and that it's FBX/OBJ/glTF.");
@@ -135,7 +161,6 @@ int main(int argc, char** argv) {
                                ImGuiSliderFlags_Logarithmic);
             ImGui::TextDisabled("In-app size = scale x Scene Scale (~%.0f)", kSceneScale);
             ImGui::ColorEdit3("Tint", tint);
-            ImGui::Checkbox("Wire", &wire); ImGui::SameLine();
             ImGui::Checkbox("Spin", &spin); ImGui::SameLine();
             ImGui::Checkbox("Grid", &grid); ImGui::SameLine();
             ImGui::Checkbox("Axes", &axes);

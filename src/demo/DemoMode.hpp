@@ -20,6 +20,7 @@ namespace afteraction::demo {
 //    AIM120   missile  — launched by VIPER02, chases VIPER03, self-destructs
 //    BRAVO1   AAA      — air-defence site east of the field
 //    EAGLE01  helo     — low patrol 150 m above the terrain
+//    ANKA01   UAV      — holding pattern at 4 800 m west of the field
 //    CONVOY1  ground   — vehicle loop on the plain south of the base
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -54,6 +55,7 @@ private:
         std::vector<Waypoint> route;
         size_t wp = 0;
         bool   on_ground = false;              // ground roll / ground vehicle
+        double ride = 2.0;                     // model origin above ground when on_ground (m)
         double rotate_speed = 0;               // takeoff speed (0 = stays on ground)
         double hold_until = 0;                 // seconds before moving
         bool   alive = true;

@@ -103,6 +103,19 @@ void DemoMode::reset() {
         f.max_climb = 8.0;
         flyers_.push_back(f);
     }
+    // ANKA01 — UAV holding pattern at 4 800 m west of the field.
+    {
+        Flyer f{8, net::TYPE_UAV, "ANKA01"};
+        const double R = 7000, cx = -9000, cz = -3000;
+        for (int i = 0; i < 8; ++i) {
+            const double a = i * kPi / 4;
+            f.route.push_back({cx + R * std::cos(a), cz + R * std::sin(a), 4800, 60, false});
+        }
+        f.x = cx + R; f.z = cz - 2000; f.alt = 4800; f.speed = 60; f.hdg = 180;
+        f.max_turn = 3.0;
+        f.max_climb = 5.0;
+        flyers_.push_back(f);
+    }
     // CONVOY1 — ground vehicle loop on the plain south-east of the base.
     {
         Flyer f{7, net::TYPE_GROUND, "CONVOY1"};
@@ -110,6 +123,7 @@ void DemoMode::reset() {
                     {5500, 6500, 0, 14, true}, {2000, 6000, 0, 14, true} };
         f.x = 1500; f.z = 2500; f.speed = 14; f.hdg = 70;
         f.on_ground = true;
+        f.ride = 0.0;          // vehicle models sit on their wheels
         f.max_turn = 15.0;
         flyers_.push_back(f);
     }
@@ -118,7 +132,7 @@ void DemoMode::reset() {
 void DemoMode::step(Flyer& f, double dt) {
     if (!f.alive) return;
     if (time_ < f.hold_until) {
-        if (f.on_ground) f.alt = ground(f.x, f.z) + 2.0;
+        if (f.on_ground) f.alt = ground(f.x, f.z) + f.ride;
         return;
     }
 
@@ -127,7 +141,7 @@ void DemoMode::step(Flyer& f, double dt) {
         f.speed += f.accel * dt;
         f.x += f.speed * std::sin(rad(f.hdg)) * dt;
         f.z -= f.speed * std::cos(rad(f.hdg)) * dt;
-        f.alt = ground(f.x, f.z) + 2.0;
+        f.alt = ground(f.x, f.z) + f.ride;
         f.pitch = f.roll = 0.0;
         if (f.speed >= f.rotate_speed) { f.on_ground = false; f.accel = 6.0; }
         return;
@@ -150,7 +164,7 @@ void DemoMode::step(Flyer& f, double dt) {
 
     const double gnd = ground(f.x, f.z);
     if (f.on_ground) {
-        f.alt = gnd + 2.0;
+        f.alt = gnd + f.ride;
         f.pitch = 0.0;
     } else {
         const double target = w.agl ? gnd + w.alt : w.alt;
@@ -223,12 +237,12 @@ std::vector<net::EntityState> DemoMode::tick(float dt_sec) {
     out.reserve(flyers_.size() + 1);
     for (const auto& f : flyers_) out.push_back(to_state(f));
 
-    // BRAVO1 — static air-defence site east of the field, turret sweeping.
+    // BRAVO1 — static air-defence vehicle east of the field, facing the runway.
     {
         Flyer site{4, net::TYPE_AAA, "BRAVO1"};
         site.x = 3500; site.z = -2500;
-        site.alt = ground(site.x, site.z) + 1.0;
-        site.hdg = std::fmod(time_ * 15.0, 360.0);
+        site.alt = ground(site.x, site.z);
+        site.hdg = 250.0;
         out.push_back(to_state(site));
     }
     return out;

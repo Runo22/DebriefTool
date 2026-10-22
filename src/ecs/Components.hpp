@@ -16,6 +16,8 @@
 //    reads; the raw history is what the interpolation system writes.
 // ─────────────────────────────────────────────────────────────────────────────
 
+namespace afteraction { struct ModelEntry; }
+
 namespace afteraction::ecs {
 
 // ── Identity ──────────────────────────────────────────────────────────────────
@@ -39,10 +41,7 @@ struct HistoryComp { EntityStateHistory hist; };
 
 // ── Visual ────────────────────────────────────────────────────────────────────
 struct RenderModel {
-    Model*     model_ptr = nullptr; // non-owning — AssetManager owns the Model
-    float      scale     = 1.0f;
-    Color      tint      = WHITE;
-    Quaternion base_rot  = {0,0,0,1}; // model-space correction; see AssetManager
+    const ModelEntry* entry = nullptr;   // non-owning — AssetManager owns it (model, tint, scale, rotors)
 };
 
 // ── Trail ribbon ──────────────────────────────────────────────────────────────

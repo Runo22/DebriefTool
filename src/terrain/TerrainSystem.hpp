@@ -55,6 +55,10 @@ struct TerrainStats {
 //  Heights are metres MSL; entities use the same reference, so altitude above
 //  ground is simply alt − height_at().
 // ─────────────────────────────────────────────────────────────────────────────
+
+// Direction toward the sun (unit, world space) — shared by terrain and models.
+inline constexpr Vector3 kSunDir{ -0.53233f, 0.72590f, -0.43554f };
+
 class TerrainSystem {
 public:
     TerrainSystem();

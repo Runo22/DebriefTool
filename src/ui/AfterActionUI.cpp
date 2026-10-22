@@ -38,6 +38,7 @@ const char* entity_type_icon(uint16_t t) {
     case net::TYPE_GROUND:  return ICON_FA_TRUCK;
     case net::TYPE_HELO:    return ICON_FA_HELICOPTER;
     case net::TYPE_SHIP:    return ICON_FA_SHIP;
+    case net::TYPE_UAV:     return ICON_FA_PLANE_UP;
     default:                return ICON_FA_CIRCLE_QUESTION;
     }
 }
@@ -50,6 +51,7 @@ const char* entity_type_name(uint16_t t) {
     case net::TYPE_GROUND:  return "Ground";
     case net::TYPE_HELO:    return "Helo";
     case net::TYPE_SHIP:    return "Ship";
+    case net::TYPE_UAV:     return "UAV";
     default:                return "Unknown";
     }
 }
@@ -63,6 +65,7 @@ ImVec4 entity_type_color(uint16_t t) {
     case net::TYPE_GROUND:  return { 0.93f, 0.62f, 0.22f, 1.0f };
     case net::TYPE_HELO:    return { 0.42f, 0.90f, 0.50f, 1.0f };
     case net::TYPE_SHIP:    return { 0.70f, 0.70f, 0.92f, 1.0f };
+    case net::TYPE_UAV:     return { 0.78f, 0.47f, 1.00f, 1.0f };
     default:                return { 0.20f, 0.80f, 1.00f, 1.0f };
     }
 }
@@ -1198,12 +1201,12 @@ void AfterActionUI::settings_models() {
          "Preview scale and rotation with the 'hangar' tool.");
     ImGui::Spacing();
 
-    const char* kTypeNames[] = { "Unknown", "Jet", "Missile", "AAA", "Ground", "Helo", "Ship" };
+    const char* kTypeNames[] = { "Unknown", "Jet", "Missile", "AAA", "Ground", "Helo", "Ship", "UAV" };
     int remove_idx = -1;
     for (int i = 0; i < (int)state_.model_bindings.size(); ++i) {
         auto& b = state_.model_bindings[i];
         ImGui::PushID(i);
-        const int tclamp = (b.type >= 0 && b.type < 7) ? b.type : 0;
+        const int tclamp = (b.type >= 0 && b.type < IM_ARRAYSIZE(kTypeNames)) ? b.type : 0;
         char hdr[320];
         snprintf(hdr, sizeof(hdr), "%s  %s   %s###mb%d", entity_type_icon(static_cast<uint16_t>(tclamp)),
                  kTypeNames[tclamp], b.file[0] ? b.file : "<no file>", i);
