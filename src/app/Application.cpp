@@ -1074,18 +1074,33 @@ void Application::render_3d() {
                                              u.alt_value_alt(pos.v.y), u.alt_suffix_alt());
 
                 const float fs = 17.0f * ui_.state().ui_scale, afs = 14.0f * ui_.state().ui_scale;
-                int tx = (int)sp.x + 9, ty = (int)sp.y - 8;
+
+                // Put the label just outside the model's on-screen size (models
+                // grow when the camera is close), joined by a short leader line.
+                const ecs::RenderModel* rm = fe.try_get<ecs::RenderModel>();
+                const float len = display_length(rp2, rm && rm->entry ? rm->entry->length : 20.0f);
+                const Vector3 cam_right = Vector3Normalize(Vector3CrossProduct(cam_fwd, camera_.up));
+                const Vector2 edge = GetWorldToScreen(Vector3Add(rp2, Vector3Scale(cam_right, len * 0.5f)), camera_);
+                const float r_px = std::min(Vector2Distance(edge, sp), 240.0f);
+                const float off = std::max(9.0f, r_px * 0.8f);
+                int tx = (int)(sp.x + off), ty = (int)(sp.y - off * 0.6f) - 8;
                 int wlbl = (int)MeasureTextEx(label_font_, lbl, fs, 0.5f).x;
                 int walt = alt ? (int)MeasureTextEx(label_font_, alt, afs, 0.5f).x : 0;
                 int w = std::max(wlbl, walt);
                 int h = (int)(fs + (alt ? afs : 0.0f));
+                if (off > 16.0f)
+                    DrawLineEx({ sp.x + off * 0.45f, sp.y - off * 0.27f }, { (float)tx - 4, (float)ty + h * 0.5f }, 1.0f,
+                               { 160, 200, 230, (unsigned char)(a * 0.6f) });
 
-                // Background plate keeps text legible over bright/busy terrain.
+                // Background plate keeps text legible over bright/busy terrain;
+                // the stripe on the left is the track's type colour (as its trail).
                 DrawRectangle(tx - 4, ty - 3, w + 8, h + 6,
                               { 6, 10, 18, (unsigned char)(a * 0.62f) });
                 DrawRectangleLines(tx - 4, ty - 3, w + 8, h + 6,
                               sel ? Color{ 255, 220, 0, a }
                                   : Color{ 40, 90, 120, (unsigned char)(a * 0.7f) });
+                if (const ecs::Trail* tr = fe.try_get<ecs::Trail>())
+                    DrawRectangle(tx - 4, ty - 3, 3, h + 6, { tr->color.r, tr->color.g, tr->color.b, a });
 
                 DrawTextEx(label_font_, lbl, { (float)tx, (float)ty }, fs, 0.5f,
                            sel ? Color{ 255, 220, 0, a } : Color{ 220, 236, 255, a });

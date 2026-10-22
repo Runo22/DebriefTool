@@ -203,6 +203,8 @@ public:
     [[nodiscard]] float top_bar_height() const { return kTopBarHeight * applied_scale_; }
 
 private:
+    double rec_t0_ = -1.0;   // ImGui time the current recording started (−1: not recording)
+
     void draw_top_bar(PlaybackController& pb, const TelemetryStore& store,
                       const net::ReceiverStats& stats, const persist::Recorder& recorder);
     void draw_timeline(PlaybackController& pb, const TelemetryStore& store,

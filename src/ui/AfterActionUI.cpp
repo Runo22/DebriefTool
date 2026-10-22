@@ -106,36 +106,41 @@ bool tinted_button(const char* label, ImVec4 c, ImVec2 size = {0, 0}) {
     return r;
 }
 
-// LIVE chip: while live, the normal button face with a thin green outline,
-// green text and a pulsing dot; otherwise a plain "back to live" button.
-bool live_button(bool live) {
+// Status chip (LIVE, Record): the normal button face with a coloured dot.
+//   on   — thin coloured outline, faint tint, coloured text, pulsing dot
+//   off  — plain button; the dot is solid (`dot_when_off`) or a dim ring
+bool chip_button(const char* id, const char* text, ImVec4 col, bool on, bool dot_when_off) {
     const ImGuiStyle& st = ImGui::GetStyle();
     const float dot_r = S(3.5f), gap = S(7.0f);
-    const ImVec2 ts = ImGui::CalcTextSize("LIVE");
+    const ImVec2 ts = ImGui::CalcTextSize(text);
     const ImVec2 size{ st.FramePadding.x * 2.0f + dot_r * 2.0f + gap + ts.x, ImGui::GetFrameHeight() };
     const ImVec2 p = ImGui::GetCursorScreenPos();
 
-    if (live) {
-        const ImVec4 face = st.Colors[ImGuiCol_Button];
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, face);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, face);
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(kGood.x, kGood.y, kGood.z, 0.45f));
+    if (on) {
+        const ImVec4 f = st.Colors[ImGuiCol_Button];
+        const ImVec4 face{ f.x + (col.x - f.x) * 0.10f, f.y + (col.y - f.y) * 0.10f, f.z + (col.z - f.z) * 0.10f, f.w };
+        const ImVec4 hover{ f.x + (col.x - f.x) * 0.20f, f.y + (col.y - f.y) * 0.20f, f.z + (col.z - f.z) * 0.20f, f.w };
+        ImGui::PushStyleColor(ImGuiCol_Button, face);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, hover);
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(col.x, col.y, col.z, 0.45f));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, std::max(1.0f, S(1.0f)));
     }
-    const bool clicked = ImGui::Button("##live", size);
-    if (live) { ImGui::PopStyleVar(); ImGui::PopStyleColor(3); }
+    const bool clicked = ImGui::Button(id, size);
+    if (on) { ImGui::PopStyleVar(); ImGui::PopStyleColor(4); }
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 dot{ p.x + st.FramePadding.x + dot_r, p.y + size.y * 0.5f };
-    const ImVec2 text{ dot.x + dot_r + gap, p.y + (size.y - ts.y) * 0.5f };
-    if (live) {
+    const ImVec2 tp{ dot.x + dot_r + gap, p.y + (size.y - ts.y) * 0.5f };
+    if (on) {
         const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(ImGui::GetTime()) * 3.0f);
-        dl->AddCircleFilled(dot, dot_r * (1.6f + 0.8f * pulse), ImGui::GetColorU32(ImVec4(kGood.x, kGood.y, kGood.z, 0.18f * (1.0f - pulse))));
-        dl->AddCircleFilled(dot, dot_r, ImGui::GetColorU32(kGood));
-        dl->AddText(text, ImGui::GetColorU32(kGood), "LIVE");
+        dl->AddCircleFilled(dot, dot_r * (1.6f + 0.8f * pulse), ImGui::GetColorU32(ImVec4(col.x, col.y, col.z, 0.18f * (1.0f - pulse))));
+        dl->AddCircleFilled(dot, dot_r, ImGui::GetColorU32(col));
+        dl->AddText(tp, ImGui::GetColorU32(col), text);
     } else {
-        dl->AddCircle(dot, dot_r, ImGui::GetColorU32(kDim), 0, std::max(1.0f, S(1.2f)));
-        dl->AddText(text, ImGui::GetColorU32(ImGuiCol_Text), "LIVE");
+        if (dot_when_off) dl->AddCircleFilled(dot, dot_r, ImGui::GetColorU32(col));
+        else              dl->AddCircle(dot, dot_r, ImGui::GetColorU32(kDim), 0, std::max(1.0f, S(1.2f)));
+        dl->AddText(tp, ImGui::GetColorU32(ImGuiCol_Text), text);
     }
     return clicked;
 }
@@ -330,17 +335,21 @@ void AfterActionUI::draw_top_bar(PlaybackController& pb, const TelemetryStore& s
     pop_font();
     ImGui::SameLine(0, S(18));
 
-    // Recording
+    // Recording: a red chip; while recording it shows the elapsed time.
     if (recorder.is_recording()) {
-        const float blink = 0.6f + 0.4f * std::sin(static_cast<float>(ImGui::GetTime()) * 5.0f);
-        if (tinted_button(ICON_FA_STOP "  Stop", ImVec4(0.95f * blink, 0.20f, 0.22f, 1.0f)) && cbs_.on_record_stop)
-            cbs_.on_record_stop();
-        ImGui::SameLine();
-        ImGui::TextColored(kBad, "REC %llu", (unsigned long long)recorder.frames_written());
-    } else if (tinted_button(ICON_FA_CIRCLE "  Record", ImVec4(0.85f, 0.25f, 0.28f, 1.0f)) && cbs_.on_record_start) {
-        cbs_.on_record_start();
+        if (rec_t0_ < 0.0) rec_t0_ = ImGui::GetTime();
+        const int secs = static_cast<int>(ImGui::GetTime() - rec_t0_);
+        char rec[32];
+        snprintf(rec, sizeof(rec), "REC %02d:%02d", secs / 60, secs % 60);
+        if (chip_button("##rec", rec, kBad, true, true) && cbs_.on_record_stop) cbs_.on_record_stop();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Recording — %llu frames written.\nClick to stop.",
+                              (unsigned long long)recorder.frames_written());
+    } else {
+        rec_t0_ = -1.0;
+        if (chip_button("##rec", "Record", kBad, false, true) && cbs_.on_record_start) cbs_.on_record_start();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Record everything to recordings/session_*.aar");
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Record everything to recordings/session_*.aar");
     ImGui::SameLine(0, S(4));
     char save_lbl[48];
     snprintf(save_lbl, sizeof(save_lbl), ICON_FA_FLOPPY_DISK "  Last %.0f s", state_.dashcam_secs);
@@ -352,7 +361,7 @@ void AfterActionUI::draw_top_bar(PlaybackController& pb, const TelemetryStore& s
     ImGui::SameLine(0, S(18));
 
     // Transport
-    if (live_button(pb.is_live()) && !pb.is_live()) pb.stop();
+    if (chip_button("##live", "LIVE", kGood, pb.is_live(), false) && !pb.is_live()) pb.stop();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(pb.is_live() ? "Showing live data" : "Back to live");
     ImGui::SameLine(0, S(4));
@@ -626,7 +635,10 @@ void AfterActionUI::draw_tracks_tab(const flecs::world& world) {
     ImGui::TextColored(kDim, "%d track%s", n, n == 1 ? "" : "s");
     const float clear_w = ImGui::CalcTextSize(ICON_FA_TRASH " Clear").x + ImGui::GetStyle().FramePadding.x * 2.0f;
     ImGui::SameLine(ImGui::GetContentRegionMax().x - clear_w);
-    if (tinted_button(ICON_FA_TRASH " Clear", kBad) && cbs_.on_clear_entities) cbs_.on_clear_entities();
+    ImGui::PushStyleColor(ImGuiCol_Text, kBad);   // quiet, but clearly destructive
+    const bool clear = ImGui::Button(ICON_FA_TRASH " Clear");
+    ImGui::PopStyleColor();
+    if (clear && cbs_.on_clear_entities) cbs_.on_clear_entities();
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Remove all tracks and clear the telemetry buffer");
 
     const float list_h = ImGui::GetContentRegionAvail().y - (state_.selected_entity.is_valid() ? S(40.0f) : 0.0f);
