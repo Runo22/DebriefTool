@@ -2,9 +2,8 @@
 //
 // tests/vectors.json (written by tools/build_pack.py) lists exact grid-node
 // samples per layer with the quantised height the encoder stored; every one
-// must decode to the same value. Also checks blending, coverage and the C API.
+// must decode to the same value. Also checks blending, coverage and LOD queries.
 #include "tdem/tdem.hpp"
-#include "tdem/tdem_c.h"
 
 #include <cmath>
 #include <cstdio>
@@ -92,6 +91,11 @@ int main(int argc, char** argv) {
         {"Ankara Kizilay",   39.9208, 32.8541, 820, 920},
         {"Mt Erciyes",       38.5310, 35.4470, 3600, 3950},
         {"Black Sea",        42.3000, 34.0000,  -1,   1},
+        // Neighbours (30" regional layer — smoothed, so peaks read lower)
+        {"Mt Olympus (GR)",  40.0856, 22.3586, 1800, 2950},
+        {"Damascus (SY)",    33.5100, 36.2900,  600,  800},
+        {"Yerevan (AM)",     40.1800, 44.5100,  850, 1250},
+        {"Baku (AZ)",        40.4000, 49.8600,  -40,  120},
     };
     for (const auto& p : places) {
         auto h = db.height(p.lat, p.lon);
@@ -123,15 +127,6 @@ int main(int argc, char** argv) {
         auto very = db.height(40.0789, 32.5656, 100000.0f);
         CHECK(very && std::fabs(*very - *fine) < 60.0f, "lod query above all resolutions");
     }
-
-    // 5. C API.
-    tdem_db* c = tdem_open_dir(data.c_str());
-    CHECK(c != nullptr, "tdem_open_dir");
-    float hc = 0;
-    CHECK(c && tdem_height(c, 40.0789, 32.5656, &hc) == 1 && std::fabs(hc - db.height_or(40.0789, 32.5656)) < 1e-4,
-          "C API height");
-    CHECK(tdem_layer_count(c) == static_cast<int>(L.size()), "C API layer count");
-    tdem_close(c);
 
     std::printf(g_fail ? "%d FAILURE(S)\n" : "all tests passed\n", g_fail);
     return g_fail ? 1 : 0;

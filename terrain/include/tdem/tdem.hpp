@@ -14,8 +14,6 @@
 // are no steps between resolutions.
 #pragma once
 
-#include "export.h"
-
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -45,7 +43,7 @@ struct LayerInfo {
     }
 };
 
-class TDEM_API Database {
+class Database {
 public:
     Database();
     ~Database();

@@ -214,11 +214,12 @@ python scripts/test_sender.py --host 127.0.0.1 --port 22522 --hz 10
 
 ## Terrain
 
-AfterAction renders **real terrain for all of Turkey** from the height packs in
+AfterAction renders **real terrain for Turkey and its neighbours** from the height data in
 [`terrain/`](terrain/) (copied next to the executable at build time):
 
 | Area | Grid |
 |---|---|
+| Neighbours: Greece, Bulgaria, Cyprus, Georgia, Armenia, Azerbaijan, Syria, Iraq, … (29–46 N, 19–52 E) | 30″ (~740–930 m) |
 | All of Turkey | 7.5″ (~180–230 m) |
 | Ankara region (Esenboğa, Etimesgut, Güvercinlik) | 1″ (~24–31 m) |
 | İncirlik and İzmir Çiğli surroundings (40 km) | 1″ |
@@ -315,7 +316,7 @@ afteraction.exe [options]
 ## Features
 
 - **Live 3D rendering** — entities rendered with custom models or built-in shapes
-- **Real terrain** — Turkey-wide DEM with 5 m detail at Akıncı, İncirlik and Çiğli; runway overlays, contours, AGL
+- **Real terrain** — Turkey + neighbours DEM with 5 m detail at Akıncı, İncirlik and Çiğli; runway overlays, contours, AGL
 - **Inspector** — position (DMS), MSL / AGL / ground elevation, speed, vertical speed, heading / pitch / roll
 - **Smooth interpolation** — cubic Hermite splines between telemetry keyframes; fluid at 60 FPS even with 5–10 Hz update rates
 - **Trails** — line or camera-facing ribbon mode
@@ -338,7 +339,7 @@ UDP Recv Thread ──SPSC queue──► Main Thread
                                  ├─ TelemetryStore (dashcam ring buffer)
                                  ├─ Recorder (async disk I/O thread)
                                  └─ Raylib + ImGui render loop
-Terrain workers ──meshes──────►  TerrainSystem (quadtree LOD from tdem packs)
+Terrain workers ──meshes──────►  TerrainSystem (quadtree LOD from terrain.tdem)
 ```
 
 **Stack:** C++23 · CMake · [Raylib](https://raylib.com) · [Flecs 4](https://github.com/SanderMertens/flecs) · [Dear ImGui](https://github.com/ocornut/imgui) · [ImPlot](https://github.com/epezent/implot) · [Assimp](https://github.com/assimp/assimp) · [rlImGui](https://github.com/raylib-extras/rlImGui)

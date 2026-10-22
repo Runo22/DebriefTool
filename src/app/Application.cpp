@@ -1157,7 +1157,7 @@ void Application::handle_input(float /*dt*/) {
     // ── Left-click entity selection in 3D viewport ────────────────────────────
     // Only when ImGui is not capturing the mouse
     if (!ImGui::GetIO().WantCaptureMouse && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        Ray ray = GetMouseRay(GetMousePosition(), camera_);
+        Ray ray = mouse_ray();
         float best_dist = 1e10f;
         flecs::entity best_ent{};
         const float exag = ui_.state().altitude_exaggerate;
@@ -1252,6 +1252,23 @@ TerrainStyle Application::terrain_style() const {
     return s;
 }
 
+// Ray through the mouse cursor, built from the camera's own axes. raylib's
+// GetMouseRay() unprojects with the *current* clip planes (reset to 0.01–1000 m
+// after drawing), which loses all precision — even NaN — when the camera is
+// hundreds of kilometres from the scene.
+Ray Application::mouse_ray() const {
+    const Vector2 m = GetMousePosition();
+    const float w = static_cast<float>(GetScreenWidth()), h = static_cast<float>(GetScreenHeight());
+    const float nx = 2.0f * m.x / w - 1.0f, ny = 1.0f - 2.0f * m.y / h;
+    const float t = std::tan(camera_.fovy * 0.5f * DEG2RAD);
+    const Vector3 fwd   = Vector3Normalize(Vector3Subtract(camera_.target, camera_.position));
+    const Vector3 right = Vector3Normalize(Vector3CrossProduct(fwd, camera_.up));
+    const Vector3 up    = Vector3CrossProduct(right, fwd);
+    const Vector3 dir = Vector3Normalize(Vector3Add(fwd, Vector3Add(Vector3Scale(right, nx * t * w / h),
+                                                                   Vector3Scale(up, ny * t))));
+    return Ray{ camera_.position, dir };
+}
+
 void Application::look_at(float x, float z) {
     camera_ctl_.fly_to({ x, terrain_height_at(x, z) * ui_.state().altitude_exaggerate, z });
 }
@@ -1268,7 +1285,8 @@ void Application::update_scene_info() {
     if (!ImGui::GetIO().WantCaptureMouse && terrain_.has_data() && ui_.state().terrain_mode > 0) {
         const float exag = ui_.state().altitude_exaggerate;
         Vector3 hit;
-        if (terrain_.raycast(GetMouseRay(GetMousePosition(), camera_), exag, 400000.0f, &hit)) {
+        if (terrain_.raycast(mouse_ray(), exag, 1500000.0f, &hit) &&
+            std::isfinite(hit.x) && std::isfinite(hit.z)) {
             sc.cursor_valid = true;
             geo_.to_geo(hit.x, hit.z, &sc.cursor_lat, &sc.cursor_lon);
             sc.cursor_elev = terrain_.height_at(hit.x, hit.z);

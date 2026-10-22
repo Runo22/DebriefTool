@@ -3,8 +3,7 @@
 build_pack.py — build TDEM terrain-height packs from Copernicus DEM tiles.
 
     pip install numpy scipy rasterio
-    python build_pack.py --cache ./dem_cache --out ../data            # all packs
-    python build_pack.py --cache ./dem_cache --out ../data --only ankara.tdem
+    python build_pack.py --cache ./dem_cache            # -> ../data/terrain.tdem
 
 Steps per layer:
   1. Mosaic the needed 1x1 degree Copernicus tiles (downloaded into --cache on
@@ -14,6 +13,8 @@ Steps per layer:
   3. Flatten runways (geometry from OurAirports, longitudinal profile from the
      30 m DEM) so runways are level, consistently in every layer.
   4. Quantise, tile and compress (see ../FORMAT.md) and write the pack.
+
+All layers listed in regions.json go into one file.
 
 Also writes ../tests/vectors.json with exact grid-node samples so the C++
 reader can be checked against this reference.
@@ -25,18 +26,119 @@ import csv
 import json
 import math
 import os
-import sys
 import time
+import struct
 import urllib.request
+import zlib
+from dataclasses import dataclass
 
 import numpy as np
 from scipy import ndimage
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "python"))
-import tdem  # noqa: E402
 
 FT = 0.3048
+
+
+# ── TDEM writer (format: ../FORMAT.md; the C++ reader is ../src/tdem.cpp) ────
+
+@dataclass
+class Layer:
+    name: str
+    north: float          # latitude of row 0 (deg)
+    west: float           # longitude of column 0 (deg)
+    dlat: float           # row spacing (deg, > 0; latitude decreases with row)
+    dlon: float           # column spacing (deg, > 0)
+    heights: np.ndarray   # float32 [rows, cols], metres MSL
+    quant_step: float = 0.25
+    blend_m: float = 0.0  # fade-out distance at the layer edge toward coarser layers
+    resolution_m: float = 0.0
+    tile_size: int = 256
+
+    @property
+    def rows(self) -> int:
+        return self.heights.shape[0]
+
+    @property
+    def cols(self) -> int:
+        return self.heights.shape[1]
+
+    def tiles_xy(self) -> tuple[int, int]:
+        T = self.tile_size
+        return (self.cols + T - 1) // T, (self.rows + T - 1) // T
+
+
+_FILE_HDR = struct.Struct("<4sIIIQ40s")        # 64 B
+_LAYER_HDR = struct.Struct("<32s4dQ4I5f20x")   # 128 B
+_TILE = struct.Struct("<QIiff")                # 24 B
+
+
+def encode_tile(v: np.ndarray) -> bytes:
+    """v: uint16 [T, T] quantised offsets from the tile base. Planar predictor
+    (left + up - upleft, mod 2^16) -> zigzag -> lo/hi byte planes -> raw deflate."""
+    a = v.astype(np.int64)
+    pred = np.zeros_like(a)
+    pred[0, 1:] = a[0, :-1]
+    pred[1:, 0] = a[:-1, 0]
+    pred[1:, 1:] = a[1:, :-1] + a[:-1, 1:] - a[:-1, :-1]
+    res = ((a - pred) & 0xFFFF).astype(np.uint16).view(np.int16).astype(np.int32)
+    zz = (((res << 1) ^ (res >> 15)) & 0xFFFF).astype(np.uint16)
+    planes = np.concatenate([(zz & 0xFF).astype(np.uint8).ravel(),
+                             (zz >> 8).astype(np.uint8).ravel()])
+    c = zlib.compressobj(9, zlib.DEFLATED, -15, 9)
+    return c.compress(planes.tobytes()) + c.flush()
+
+
+def write_pack(path: str, layers: list[Layer], description: str = "") -> dict:
+    """Write layers to a .tdem file. Returns per-layer size statistics."""
+    stats, blobs, tables = {}, [], []
+    header_bytes = _FILE_HDR.size + _LAYER_HDR.size * len(layers)
+    offset = header_bytes + sum(_TILE.size * l.tiles_xy()[0] * l.tiles_xy()[1] for l in layers)
+    for layer in layers:
+        T = layer.tile_size
+        tx_n, ty_n = layer.tiles_xy()
+        h = layer.heights
+        # Pad to whole tiles by edge replication (compresses to almost nothing).
+        padded = np.pad(h, ((0, ty_n * T - h.shape[0]), (0, tx_n * T - h.shape[1])), mode="edge")
+        table, layer_bytes, absent = [], 0, 0
+        for ty in range(ty_n):
+            for tx in range(tx_n):
+                t = padded[ty * T:(ty + 1) * T, tx * T:(tx + 1) * T]
+                hmin, hmax = float(t.min()), float(t.max())
+                if hmin == 0.0 and hmax == 0.0:
+                    table.append((0, 0, 0, 0.0, 0.0))            # absent = sea (0 m)
+                    absent += 1
+                    continue
+                qi = np.rint(t.astype(np.float64) / layer.quant_step).astype(np.int64)
+                base = int(qi.min())
+                if int(qi.max()) - base > 0xFFFF:
+                    raise ValueError(f"{layer.name}: tile ({tx},{ty}) too tall for quant_step")
+                blob = encode_tile((qi - base).astype(np.uint16))
+                table.append((offset, len(blob), base, hmin, hmax))
+                blobs.append(blob)
+                offset += len(blob)
+                layer_bytes += len(blob)
+        tables.append(table)
+        stats[layer.name] = dict(rows=layer.rows, cols=layer.cols, tiles=tx_n * ty_n,
+                                 absent=absent, bytes=layer_bytes)
+
+    with open(path, "wb") as f:
+        f.write(_FILE_HDR.pack(b"TDEM", 1, len(layers), _FILE_HDR.size, _FILE_HDR.size,
+                               description.encode()[:40]))
+        table_off = header_bytes
+        for layer, table in zip(layers, tables):
+            f.write(_LAYER_HDR.pack(layer.name.encode()[:32], layer.north, layer.west,
+                                    layer.dlat, layer.dlon, table_off,
+                                    layer.rows, layer.cols, layer.tile_size, 0,
+                                    layer.quant_step, layer.blend_m, layer.resolution_m,
+                                    float(layer.heights.min()), float(layer.heights.max())))
+            table_off += _TILE.size * len(table)
+        for table in tables:
+            for e in table:
+                f.write(_TILE.pack(*e))
+        for b in blobs:
+            f.write(b)
+    return stats
 
 
 # ── Geodesy helpers ──────────────────────────────────────────────────────────
@@ -255,7 +357,7 @@ def layer_grid(spec: dict, centers: dict):
     return north, west, dlat, dlon, rows, cols, res_m
 
 
-def build_layer(spec: dict, sources: dict, runways: list, centers: dict) -> tdem.Layer:
+def build_layer(spec: dict, sources: dict, runways: list, centers: dict) -> Layer:
     north, west, dlat, dlon, rows, cols, res_m = layer_grid(spec, centers)
     src: Source = sources[spec["source"]]
     print(f"  layer {spec['name']}: {rows}x{cols} @ {res_m:.1f} m "
@@ -285,12 +387,12 @@ def build_layer(spec: dict, sources: dict, runways: list, centers: dict) -> tdem
     lats_all = north - np.arange(rows) * dlat
     for rw in runways:
         rw.burn(out, lats_all, lons)
-    return tdem.Layer(name=spec["name"], north=north, west=west, dlat=dlat, dlon=dlon,
+    return Layer(name=spec["name"], north=north, west=west, dlat=dlat, dlon=dlon,
                       heights=out, quant_step=spec["quant_m"], blend_m=spec["blend_m"],
                       resolution_m=res_m)
 
 
-def test_vectors(layer: tdem.Layer, rng: np.random.Generator, n: int = 24) -> list:
+def test_vectors(layer: Layer, rng: np.random.Generator, n: int = 24) -> list:
     """Exact grid-node samples (quantised exactly as the encoder does)."""
     v = []
     for _ in range(n):
@@ -338,7 +440,7 @@ def main():
         t0 = time.time()
         layers = [build_layer(s, sources, runways, centers) for s in pack["layers"]]
         path = os.path.join(args.out, pack["file"])
-        stats = tdem.write_pack(path, layers, pack.get("description", ""))
+        stats = write_pack(path, layers, pack.get("description", ""))
         names = {l.name for l in layers}
         vectors = [v for v in vectors if v["layer"] not in names]
         for l in layers:

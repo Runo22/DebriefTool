@@ -77,6 +77,8 @@ private:
     void update_minimap();
     // Move the free camera so it looks at a world (x,z), keeping the zoom.
     void look_at(float x, float z);
+    // Ray from the camera through the mouse cursor (precise at any distance).
+    Ray mouse_ray() const;
     void render_ui();
     void handle_input(float dt);
 
