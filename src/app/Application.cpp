@@ -382,6 +382,7 @@ void Application::clear_all_entities() {
     entity_map_.clear();
     store_.clear();
     live_states_.clear();
+    live_newest_ns_ = 0;
     ui_.state().selected_entity = {};
     origin_locked_ = false;   // the next live track may re-centre the scene
     camera_ctl_.reset_auto_frame();   // re-frame the next single track that arrives
@@ -621,7 +622,7 @@ void Application::process_inbound_queue() {
     if (!live_states_.empty()) {
         uint64_t ts = live_states_.back().timestamp_ns;
         store_.ingest(ts, live_states_);
-        world_.set<ecs::InterpolationCtx>({ts, true});
+        note_live_sample(ts);
         if (recorder_.is_recording())
             recorder_.submit(ts, 0, live_states_);
     }
@@ -640,7 +641,7 @@ void Application::process_demo(float dt) {
     if (!live_states_.empty()) {
         uint64_t ts = live_states_.back().timestamp_ns;
         store_.ingest(ts, live_states_);
-        world_.set<ecs::InterpolationCtx>({ts, true});
+        note_live_sample(ts);
 
         if (recorder_.is_recording())
             recorder_.submit(ts, 0, live_states_);
@@ -844,6 +845,29 @@ void Application::sync_ecs_to_playback(uint64_t target_ns) {
 }
 
 // ── ECS tick ──────────────────────────────────────────────────────────────────
+void Application::note_live_sample(uint64_t ts_ns) {
+    if (ts_ns + 5'000'000'000ULL < live_newest_ns_) live_newest_ns_ = 0;   // sender clock restarted
+    if (ts_ns <= live_newest_ns_) return;
+    if (live_newest_ns_ != 0) {
+        const double gap = double(ts_ns - live_newest_ns_) * 1e-9;
+        if (gap < 2.0) live_interval_ += (gap - live_interval_) * 0.1;
+    }
+    live_newest_ns_ = ts_ns;
+    live_newest_at_ = GetTime();
+}
+
+uint64_t Application::advance_live_clock(float dt) {
+    if (live_newest_ns_ == 0) return 0;
+    // Stay ~1.5 sample intervals behind the newest data (absorbs network jitter).
+    const double delay  = std::clamp(live_interval_ * 1.5 + 0.015, 0.03, 0.5);
+    const double target = double(live_newest_ns_) + (GetTime() - live_newest_at_ - delay) * 1e9;
+    live_clock_ns_ += double(dt) * 1e9;
+    const double err = target - live_clock_ns_;
+    if (std::fabs(err) > 1e9) live_clock_ns_ = target;              // first data, stall, new sender
+    else                      live_clock_ns_ += err * std::min(1.0, double(dt) * 3.0);
+    return static_cast<uint64_t>(std::max(0.0, live_clock_ns_));
+}
+
 void Application::update_ecs(float dt) {
     playback_.tick(dt);
     auto [ts, te] = store_.time_range_ns();
@@ -851,6 +875,8 @@ void Application::update_ecs(float dt) {
     if (!playback_.is_live()) {
         sync_ecs_to_playback(playback_.current_time_ns());
         world_.set<ecs::InterpolationCtx>({playback_.current_time_ns(), false});
+    } else {
+        world_.set<ecs::InterpolationCtx>({advance_live_clock(dt), true});
     }
     world_.progress(dt);
 
@@ -975,41 +1001,17 @@ void Application::render_3d() {
             draw_entity_model(me, rp, QuaternionMultiply(rot.q, me.base_rot), me.scale * grow);
             draw_contact_shadow(rp, gh, len);
 
-            // Selection highlight (using exaggerated position rp).
-            // Deliberately does NOT draw a wire sphere around the model — that
-            // obscured the body and made rotation hard to read. Instead we use a
-            // floating chevron above the entity plus ground rings on the terrain,
-            // both of which leave the model fully visible.
-            // In chase view the camera sits right behind the track, so the chevron
-            // would hang in front of it — rings only.
-            const bool chasing = ui_.state().camera_mode == 2;
-            if (ui_.state().selected_entity == e) {
-                float mk    = 0.55f * len;   // marker size follows the on-screen model size
-
-                // Floating chevron (diamond) hovering above the model.
-                float bob  = sinf((float)GetTime() * 3.0f) * mk * 0.3f;
-                Vector3 dp = {rp.x, rp.y + mk * 2.5f + bob, rp.z};
-                float chev = mk * 0.6f;
-                if (!chasing) {
-                    DrawCylinderWires(dp, 0.f, chev, chev*1.4f, 4, YELLOW);
-                    DrawCylinderWires({dp.x, dp.y - chev*1.4f, dp.z}, chev, 0.f, chev*1.4f, 4, YELLOW);
-
-                    // Bright vertical tie-line from the chevron down to the terrain.
-                    DrawLine3D({rp.x, gh, rp.z}, dp, {255, 220, 0, 130});
-                }
-
-                // Ground rings that FOLLOW the terrain relief (a flat circle was
-                // half-buried on slopes).
-                draw_ground_ring(rp.x, rp.z, 1.2f * len, {255,220,0,160});
-                draw_ground_ring(rp.x, rp.z, 2.4f * len, {255,220,0,80});
-                draw_ground_ring(rp.x, rp.z, 4.8f * len, {255,220,0,35});
-            }
-
-            // Altitude drop line from the terrain up to the entity position.
+            // Altitude drop line from the terrain up to the entity, and a small
+            // ring where it meets the ground. The selected track gets them in
+            // the highlight colour (its screen-space brackets are drawn later).
+            const bool selected = ui_.state().selected_entity == e;
+            const Color drop_col = selected ? Color{ 255, 214, 10, 190 } : Color{ 0, 190, 255, 150 };
             if (rp.y - gh > 10.0f) {
-                DrawLine3D({rp.x, gh, rp.z}, rp, {0, 190, 255, 160});
-                float sr = std::max(50.f, (rp.y - gh) * 0.03f);
-                draw_ground_ring(rp.x, rp.z, sr, {0, 190, 255, 100});
+                DrawLine3D({rp.x, gh, rp.z}, rp, drop_col);
+                draw_ground_ring(rp.x, rp.z, std::max(0.6f * len, (rp.y - gh) * 0.03f),
+                                 { drop_col.r, drop_col.g, drop_col.b, 100 });
+            } else if (selected) {
+                draw_ground_ring(rp.x, rp.z, 0.8f * len, { 255, 214, 10, 150 });
             }
 
             // Velocity vector (in exaggerated space)
@@ -1036,6 +1038,8 @@ void Application::render_3d() {
 
     if (ui_.state().terrain_mode > 0 && ui_.state().show_labels)
         airfields_.draw_labels(camera_, exag, label_font_);
+
+    draw_selection_marker(exag);
 
     // Screen-space labels (using exaggerated Y for GetWorldToScreen)
     if (ui_.state().show_labels) {
@@ -1082,7 +1086,9 @@ void Application::render_3d() {
                 const Vector3 cam_right = Vector3Normalize(Vector3CrossProduct(cam_fwd, camera_.up));
                 const Vector2 edge = GetWorldToScreen(Vector3Add(rp2, Vector3Scale(cam_right, len * 0.5f)), camera_);
                 const float r_px = std::min(Vector2Distance(edge, sp), 240.0f);
-                const float off = std::max(9.0f, r_px * 0.8f);
+                // (the selected track's label clears its corner brackets)
+                const float off = sel ? std::max(24.0f * ui_.state().ui_scale, r_px * 1.25f)
+                                      : std::max(9.0f, r_px * 0.8f);
                 int tx = (int)(sp.x + off), ty = (int)(sp.y - off * 0.6f) - 8;
                 int wlbl = (int)MeasureTextEx(label_font_, lbl, fs, 0.5f).x;
                 int walt = alt ? (int)MeasureTextEx(label_font_, alt, afs, 0.5f).x : 0;
@@ -1161,8 +1167,15 @@ void Application::handle_input(float /*dt*/) {
     // ── Left-click entity selection in 3D viewport ────────────────────────────
     // Only when ImGui is not capturing the mouse
     if (!ImGui::GetIO().WantCaptureMouse && IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        Ray ray = mouse_ray();
-        float best_dist = 1e10f;
+        // Screen-space hit test: within the model's on-screen size (at least a
+        // few pixels) of the cursor; the nearest such track to the cursor wins.
+        // (A 3D distance-to-ray test caught almost every click when the camera
+        // sat close behind a track.)
+        const Vector2 mouse = GetMousePosition();
+        const Vector3 cam_fwd = Vector3Normalize(Vector3Subtract(camera_.target, camera_.position));
+        const Vector3 cam_right = Vector3Normalize(Vector3CrossProduct(cam_fwd, camera_.up));
+        const float min_px = 14.0f * ui_.state().ui_scale;
+        float best_score = 1e30f;
         flecs::entity best_ent{};
         const float exag = ui_.state().altitude_exaggerate;
 
@@ -1171,18 +1184,17 @@ void Application::handle_input(float /*dt*/) {
                 if (!meta.active) return;
                 // Hit-test against the RENDERED position (altitude exaggeration
                 // applied) — otherwise clicks miss whenever exaggeration > 1.
-                Vector3 rp = { pos.v.x, pos.v.y * exag, pos.v.z };
+                const Vector3 rp = { pos.v.x, pos.v.y * exag, pos.v.z };
+                if (Vector3DotProduct(Vector3Subtract(rp, camera_.position), cam_fwd) <= 0.0f) return;
                 const ecs::RenderModel* rm = e.try_get<ecs::RenderModel>();
-                const float length = rm && rm->entry ? rm->entry->length : 20.0f;
-                float pick_r = std::max(1.4f * display_length(rp, length), 15.0f);
-                Vector3 to_center = Vector3Subtract(rp, ray.position);
-                float t = Vector3DotProduct(to_center, ray.direction);
-                if (t < 0) return;
-                Vector3 closest = Vector3Add(ray.position, Vector3Scale(ray.direction, t));
-                float dist = Vector3Length(Vector3Subtract(closest, rp));
-                if (dist < pick_r && t < best_dist) {
-                    best_dist = t;
-                    best_ent  = e;
+                const float len = display_length(rp, rm && rm->entry ? rm->entry->length : 20.0f);
+                const Vector2 sp   = GetWorldToScreen(rp, camera_);
+                const Vector2 edge = GetWorldToScreen(Vector3Add(rp, Vector3Scale(cam_right, len * 0.5f)), camera_);
+                const float r = std::max(Vector2Distance(sp, edge), min_px);
+                const float d = Vector2Distance(sp, mouse);
+                if (d < r && d / r < best_score) {
+                    best_score = d / r;
+                    best_ent   = e;
                 }
             });
 
@@ -1278,6 +1290,74 @@ void Application::draw_ground_ring(float cx, float cz, float radius, Color col) 
     }
     rlDrawRenderBatchActive();   // flush the ring while depth-test is still off
     rlEnableDepthTest();
+}
+
+// Selected track: corner brackets around the model on screen (they snap in
+// from a larger size when the selection changes); an arrow on the screen edge
+// when the track is off-screen or behind the camera.
+void Application::draw_selection_marker(float exag) {
+    flecs::entity sel = ui_.state().selected_entity;
+    if (!sel.is_valid() || !sel.is_alive() || !sel.has<ecs::Position>()) { marker_entity_ = 0; return; }
+    if (const ecs::EntityMeta* meta = sel.try_get<ecs::EntityMeta>(); meta && !meta->active) return;
+    if (marker_entity_ != sel.id()) { marker_entity_ = sel.id(); marker_t0_ = GetTime(); }
+
+    const Vector3 pos = sel.get<ecs::Position>().v;
+    const Vector3 rp{ pos.x, pos.y * exag, pos.z };
+    const ecs::RenderModel* rm = sel.try_get<ecs::RenderModel>();
+    const float len = display_length(rp, rm && rm->entry ? rm->entry->length : 20.0f);
+
+    const float k  = ui_.state().ui_scale;
+    const Color col{ 255, 214, 10, 235 }, shade{ 0, 0, 0, 120 };
+    const Vector3 fwd = Vector3Normalize(Vector3Subtract(camera_.target, camera_.position));
+    const Vector3 to  = Vector3Subtract(rp, camera_.position);
+    const bool ahead  = Vector3DotProduct(to, fwd) > 0.0f;
+    const Vector2 sp  = GetWorldToScreen(rp, camera_);
+    // Keep the marker in the part of the window the panels leave free.
+    const Rectangle vr = ui_.view_rect();
+    const float margin = 22.0f * k;
+    const float left = vr.x + margin, right = vr.x + vr.width - margin;
+    const float top = vr.y + margin, bottom = vr.y + vr.height - margin;
+
+    if (ahead && sp.x > left && sp.x < right && sp.y > top && sp.y < bottom) {
+        const Vector3 cam_right = Vector3Normalize(Vector3CrossProduct(fwd, camera_.up));
+        const Vector2 edge  = GetWorldToScreen(Vector3Add(rp, Vector3Scale(cam_right, len * 0.5f)), camera_);
+        float r = std::clamp(Vector2Distance(edge, sp) * 0.95f, 14.0f * k, 260.0f * k);
+        const float t = static_cast<float>(GetTime() - marker_t0_) / 0.25f;     // snap-in
+        if (t < 1.0f) r *= 1.0f + 0.8f * (1.0f - t) * (1.0f - t);
+        const float arm = std::max(6.0f * k, r * 0.38f), th = std::max(1.5f, 2.0f * k);
+        for (int i = 0; i < 4; ++i) {
+            const float sx = (i & 1) ? 1.0f : -1.0f, sy = (i & 2) ? 1.0f : -1.0f;
+            const Vector2 c{ sp.x + sx * r, sp.y + sy * r };
+            for (int pass = 0; pass < 2; ++pass) {      // dark halo, then the bracket
+                const float w = pass ? th : th + 2.0f;
+                const Color cc = pass ? col : shade;
+                DrawLineEx(c, { c.x - sx * arm, c.y }, w, cc);
+                DrawLineEx(c, { c.x, c.y - sy * arm }, w, cc);
+            }
+        }
+        return;
+    }
+
+    // Off-screen (or under a panel): a triangle on the view's edge pointing toward the track.
+    // Direction from the camera's own axes, which stays right for tracks behind
+    // the camera or high above a camera looking down (projection flips there).
+    const Vector2 c{ (left + right) * 0.5f, (top + bottom) * 0.5f };
+    const Vector3 cam_x = Vector3Normalize(Vector3CrossProduct(fwd, camera_.up));
+    const Vector3 cam_y = Vector3CrossProduct(cam_x, fwd);
+    Vector2 d{ Vector3DotProduct(to, cam_x), -Vector3DotProduct(to, cam_y) };
+    if (Vector2Length(d) < 1e-3f) d = { 0.0f, 1.0f };
+    d = Vector2Normalize(d);
+    const float hx = std::max(1.0f, (right - left) * 0.5f), hy = std::max(1.0f, (bottom - top) * 0.5f);
+    const float sx = std::fabs(d.x) > 1e-4f ? hx / std::fabs(d.x) : 1e9f;
+    const float sy = std::fabs(d.y) > 1e-4f ? hy / std::fabs(d.y) : 1e9f;
+    const Vector2 tip{ c.x + d.x * std::min(sx, sy), c.y + d.y * std::min(sx, sy) };
+    const Vector2 n{ -d.y, d.x };
+    const float L = 16.0f * k, W = 8.0f * k;
+    const Vector2 base{ tip.x - d.x * L, tip.y - d.y * L };
+    const Vector2 a{ base.x + n.x * W, base.y + n.y * W }, b{ base.x - n.x * W, base.y - n.y * W };
+    DrawTriangle(tip, b, a, col);
+    DrawTriangle(tip, a, b, col);   // either winding
+    DrawTriangleLines(tip, a, b, shade);
 }
 
 TerrainStyle Application::terrain_style() const {

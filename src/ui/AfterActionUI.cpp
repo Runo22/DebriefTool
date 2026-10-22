@@ -310,6 +310,13 @@ void AfterActionUI::draw(PlaybackController& pb,
     draw_track_panel(world, bottom);
     draw_right_column(world, net_stats, bottom);
     draw_settings_window();
+
+    const float sw = static_cast<float>(GetScreenWidth()), sh = static_cast<float>(GetScreenHeight());
+    const bool right_col = state_.selected_entity.is_valid() || state_.show_minimap || state_.show_stats;
+    const float x0 = S(kPad) + S(kLeftW);
+    const float x1 = right_col ? sw - S(kRightW) - S(kPad) : sw;
+    const float y0 = top_bar_height();
+    view_rect_ = { x0, y0, std::max(1.0f, x1 - x0), std::max(1.0f, sh - bottom - y0) };
 }
 
 // ── Top bar ───────────────────────────────────────────────────────────────────

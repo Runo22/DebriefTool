@@ -68,6 +68,9 @@ private:
     float display_length(Vector3 render_pos, float length) const;
     void draw_entity_model(const ModelEntry& m, Vector3 rp, Quaternion rot, float scale) const;
     void draw_contact_shadow(Vector3 rp, float ground_y, float size) const;
+    void draw_selection_marker(float exag);
+    uint64_t marker_entity_ = 0;   // selection the marker animation started for
+    double   marker_t0_     = 0.0;
 
     // A ground ring that follows the terrain relief (vertices lifted to terrain
     // height) — used for selection/altitude markers so they don't sink into hills.
@@ -173,6 +176,16 @@ private:
 
     // Flat buffer of current live entity states (for store ingestion).
     std::vector<net::EntityState> live_states_;
+
+    // Live render clock: runs with real time and is steered to stay a little
+    // behind the newest sample, so tracks interpolate between packets instead
+    // of stepping to each one (and cameras following them stay smooth).
+    void     note_live_sample(uint64_t ts_ns);
+    uint64_t advance_live_clock(float dt);
+    uint64_t live_newest_ns_ = 0;      // newest sample timestamp
+    double   live_newest_at_ = 0.0;    // GetTime() when it arrived
+    double   live_interval_  = 0.05;   // smoothed time between samples (s)
+    double   live_clock_ns_  = 0.0;    // render time
 
     bool running_ = true;
     std::string saved_config_;          // last settings text written to disk

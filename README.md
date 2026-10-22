@@ -278,7 +278,7 @@ The app ships with coloured procedural shapes as built-in defaults. To load prop
 | **3** | Fast-forward (×4) |
 | **4** | Rewind (×−1) |
 | **F** | Focus / unfocus selected track |
-| **G** | Chase camera on selected track |
+| **G** | Chase camera on selected track (mouse wheel: distance behind it) |
 | **H** | Fly to the home position |
 | **R** | Toggle Line / Ribbon trail mode |
 | **Esc** | Close Settings, then clear the selection |

@@ -201,9 +201,12 @@ public:
     // Height of the bar docked at the top (3D overlays stay below it).
     static constexpr float kTopBarHeight = 44.0f;
     [[nodiscard]] float top_bar_height() const { return kTopBarHeight * applied_scale_; }
+    // Part of the window the docked panels leave free for the 3D view (last frame).
+    [[nodiscard]] Rectangle view_rect() const { return view_rect_; }
 
 private:
     double rec_t0_ = -1.0;   // ImGui time the current recording started (−1: not recording)
+    Rectangle view_rect_{ 0, 0, 0, 0 };
 
     void draw_top_bar(PlaybackController& pb, const TelemetryStore& store,
                       const net::ReceiverStats& stats, const persist::Recorder& recorder);

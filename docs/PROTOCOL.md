@@ -65,7 +65,7 @@ The demo sender has a shortcut: `python scripts/test_sender.py --clear`.
 | `phi`      | `float64`   | 8     | degrees      | Roll. `-180`..`+180`. Positive = right bank. |
 | `theta`    | `float64`   | 8     | degrees      | Pitch. `-90`..`+90`. Positive = nose up. |
 | `psi`      | `float64`   | 8     | degrees      | Heading. `0` = North, `90` = East, clockwise, `0`..`360`. |
-| `speed`    | `float64`   | 8     | m/s          | Airspeed in metres/second. `0` = unknown. Used for the velocity vector and chase-cam lead. |
+| `speed`    | `float64`   | 8     | m/s          | Airspeed in metres/second. `0` = unknown. Used for the velocity vector and for smooth interpolation between updates. |
 | `time_ns`  | `uint64`    | 8     | ns           | UNIX time in **nanoseconds**. Send `0` to have AfterAction stamp it with the receive time. |
 
 Python format string: `"<IHB32sdddddddQ"`

@@ -44,32 +44,37 @@ void CameraController::update(Camera3D& cam, UIState& st, float dt) {
         p.y *= st.altitude_exaggerate;
         cam.target   = p;
         cam.position = Vector3Add(p, orbit_offset(st.camera_yaw, st.camera_pitch, st.camera_distance));
-    } else if (st.camera_mode == 2 && sel.has<ecs::Rotation>() && sel.has<ecs::Velocity>()) {
-        // ── Chase: spring-follow behind the track, looking a little ahead ─────
+    } else if (st.camera_mode == 2 && sel.has<ecs::Rotation>()) {
+        // ── Chase: behind the track along its (smoothed) heading ──────────────
+        // Only the horizontal heading is used, so banking and pitching don't
+        // swing the camera; the position is then placed exactly relative to the
+        // track (no spring lag, so nothing wobbles).
         Vector3 p = sel.get<ecs::Position>().v;
-        const Quaternion q = sel.get<ecs::Rotation>().q;
-        const Vector3 v = sel.get<ecs::Velocity>().v;
         p.y *= st.altitude_exaggerate;
+        Vector3 fwd = Vector3RotateByQuaternion({ 0, 0, -1 }, sel.get<ecs::Rotation>().q);
+        fwd.y = 0.0f;
+        if (Vector3Length(fwd) > 1e-3f) fwd = Vector3Normalize(fwd);
+        else                            fwd = chase_dir_;
 
-        const Vector3 fwd = Vector3Normalize(Vector3RotateByQuaternion({ 0, 0, -1 }, q));
-        const Vector3 up  = Vector3Normalize(Vector3RotateByQuaternion({ 0, 1, 0 }, q));
-        const Vector3 rgt = Vector3CrossProduct(fwd, up);
-        // Close enough to see the model (a few lengths behind), farther as the user zooms out.
         const ecs::RenderModel* rm = sel.try_get<ecs::RenderModel>();
         const float length = rm && rm->entry ? rm->entry->length : 20.0f;
-        const float base = std::max(length * 2.5f, st.camera_distance * 0.08f);
+        const float want_base = length * chase_lengths_;
+        if (chase_entity_ != sel.id()) {
+            chase_entity_ = sel.id();
+            chase_dir_  = fwd;
+            chase_base_ = want_base;
+        }
+        const float k_dir = 1.0f - std::exp(-2.5f * dt);
+        chase_dir_  = Vector3Normalize(Vector3Lerp(chase_dir_, fwd, k_dir));
+        chase_base_ += (want_base - chase_base_) * (1.0f - std::exp(-6.0f * dt));
 
-        // Swing the "behind" vector by the user's chase offsets (RMB drag).
-        Vector3 back = Vector3Negate(fwd);
-        back = Vector3RotateByQuaternion(back, QuaternionFromAxisAngle({ 0, 1, 0 }, st.chase_yaw_offset * DEG2RAD));
-        back = Vector3RotateByQuaternion(back, QuaternionFromAxisAngle(rgt, st.chase_pitch_offset * DEG2RAD));
-        const float height = 0.45f + st.chase_pitch_offset * 0.008f;
-        const Vector3 want = Vector3Add(p, Vector3Add(Vector3Scale(back, base), { 0, base * height, 0 }));
-
-        const float a = 1.0f - std::exp(-8.0f * dt);   // critically-damped-ish follow
-        cam.position = Vector3Lerp(cam.position, want, a);
-        const float ahead = std::min(Vector3Length(v) * 1.5f, base * 1.2f);
-        cam.target = Vector3Lerp(cam.target, Vector3Add(p, Vector3Scale(fwd, ahead)), a);
+        const Vector3 dir = Vector3RotateByQuaternion(
+            chase_dir_, QuaternionFromAxisAngle({ 0, 1, 0 }, st.chase_yaw_offset * DEG2RAD));
+        const float elev = std::clamp(st.chase_pitch_offset, -30.0f, 60.0f) * DEG2RAD;
+        cam.position = Vector3Add(p, Vector3Add(Vector3Scale(dir, -chase_base_ * std::cos(elev)),
+                                                { 0, chase_base_ * std::sin(elev), 0 }));
+        // Look a little ahead so the model sits just below the centre.
+        cam.target = Vector3Add(p, Vector3Scale(dir, chase_base_ * 0.3f));
     } else {
         // ── Free orbit around the pivot ───────────────────────────────────────
         if (flying_) {
@@ -80,15 +85,40 @@ void CameraController::update(Camera3D& cam, UIState& st, float dt) {
         cam.target   = pivot_;
         cam.position = Vector3Add(pivot_, orbit_offset(st.camera_yaw, st.camera_pitch, st.camera_distance));
     }
+    // Switching mode or track glides over ~0.7 s instead of cutting.
+    const uint64_t sel_id = st.camera_mode != 0 && usable(sel) ? sel.id() : 0;
+    if (st.camera_mode != last_mode_ || sel_id != last_sel_) {
+        if (last_mode_ >= 0) { glide_from_pos_ = prev_pos_; glide_from_tgt_ = prev_tgt_; glide_t_ = 0.0f; }
+        // Leaving a track view for free orbit: keep orbiting where we were looking.
+        if (st.camera_mode == 0 && last_mode_ > 0) {
+            set_pivot(prev_tgt_);
+            cam.target   = pivot_;
+            cam.position = Vector3Add(pivot_, orbit_offset(st.camera_yaw, st.camera_pitch, st.camera_distance));
+        }
+        last_mode_ = st.camera_mode;
+        last_sel_  = sel_id;
+        if (sel_id == 0) chase_entity_ = 0;
+    }
+    if (glide_t_ < 1.0f) {
+        glide_t_ = std::min(1.0f, glide_t_ + dt / 0.7f);
+        const float t = glide_t_ * glide_t_ * (3.0f - 2.0f * glide_t_);   // smoothstep
+        cam.position = Vector3Lerp(glide_from_pos_, cam.position, t);
+        cam.target   = Vector3Lerp(glide_from_tgt_, cam.target, t);
+    }
     keep_above_ground(cam, st);
+    prev_pos_ = cam.position;
+    prev_tgt_ = cam.target;
 }
 
 void CameraController::handle_mouse(UIState& st, bool ui_has_mouse) {
     if (ui_has_mouse) return;
 
     // Wheel: exponential zoom — faster when far, finer when close.
-    if (const float wheel = GetMouseWheelMove(); wheel != 0.0f)
-        st.camera_distance = std::clamp(st.camera_distance * std::pow(0.88f, wheel), 30.0f, 900000.0f);
+    // In chase view the wheel sets the distance behind the track (in model lengths).
+    if (const float wheel = GetMouseWheelMove(); wheel != 0.0f) {
+        if (st.camera_mode == 2) chase_lengths_ = std::clamp(chase_lengths_ * std::pow(0.88f, wheel), 1.2f, 300.0f);
+        else st.camera_distance = std::clamp(st.camera_distance * std::pow(0.88f, wheel), 30.0f, 900000.0f);
+    }
 
     // RMB: orbit (free / focus) or swing around the track (chase). "Invert"
     // = grab the scene: the world moves with the cursor.
@@ -161,7 +191,8 @@ void CameraController::handle_keys(UIState& st, bool typing, float dt) {
 void CameraController::keep_above_ground(Camera3D& cam, const UIState& st) const {
     if (!ground_) return;
     const float g = ground_(cam.position.x, cam.position.z) * st.altitude_exaggerate;
-    const float min_y = g + std::max(5.0f, st.camera_distance * 0.02f);
+    const float view_dist = st.camera_mode == 2 ? chase_base_ : st.camera_distance;
+    const float min_y = g + std::max(st.camera_mode == 2 ? 2.0f : 5.0f, view_dist * 0.02f);
     if (cam.position.y < min_y) cam.position.y = min_y;
 }
 
