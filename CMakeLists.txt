@@ -273,14 +273,17 @@ add_custom_command(TARGET afteraction POST_BUILD
     COMMENT "Copying assets..."
 )
 
-# Terrain packs (~40 MB) go to <bin>/terrain; copy only when changed.
-file(GLOB TERRAIN_PACKS ${CMAKE_SOURCE_DIR}/terrain/data/*.tdem)
+# Terrain data (~50 MB) goes to <bin>/terrain. A separate always-run target,
+# so a new terrain.tdem is copied even when nothing needs re-linking;
+# copy_if_different keeps it cheap.
+file(GLOB TERRAIN_PACKS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/terrain/data/*.tdem)
 list(APPEND TERRAIN_PACKS ${CMAKE_SOURCE_DIR}/terrain/tools/runways_tr.csv)
-add_custom_command(TARGET afteraction POST_BUILD
+add_custom_target(terrain_data ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:afteraction>/terrain
     COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TERRAIN_PACKS} $<TARGET_FILE_DIR:afteraction>/terrain
-    COMMENT "Copying terrain packs..."
+    COMMENT "Copying terrain data..."
 )
+add_dependencies(afteraction terrain_data)
 
 # ── Install — AfterAction only (third-party installs were skipped above) ───────
 include(GNUInstallDirs)
