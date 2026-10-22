@@ -220,7 +220,7 @@ AfterAction renders **real terrain for Turkey and its neighbours** from the heig
 | Area | Grid |
 |---|---|
 | Neighbours: Greece, Bulgaria, Cyprus, Georgia, Armenia, Azerbaijan, Syria, Iraq, … (29–46 N, 19–52 E) | 30″ (~740–930 m) |
-| All of Turkey | 7.5″ (~180–230 m) |
+| Turkey + ~100–150 km around it (Cyprus, northern Syria/Iraq, Armenia, Georgia, Aegean islands) | 7.5″ (~180–230 m) |
 | Ankara region (Esenboğa, Etimesgut, Güvercinlik) | 1″ (~24–31 m) |
 | İncirlik and İzmir Çiğli surroundings (40 km) | 1″ |
 | **Akıncı** (16 km), **İncirlik**, **Çiğli** (12 km) | **5 m** |

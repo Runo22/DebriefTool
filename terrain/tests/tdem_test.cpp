@@ -91,6 +91,9 @@ int main(int argc, char** argv) {
         {"Ankara Kizilay",   39.9208, 32.8541, 820, 920},
         {"Mt Erciyes",       38.5310, 35.4470, 3600, 3950},
         {"Black Sea",        42.3000, 34.0000,  -1,   1},
+        // Band around Turkey (7.5" layer)
+        {"Nicosia (CY)",     35.1700, 33.3600,   80,  250},
+        {"Aleppo (SY)",      36.2000, 37.1600,  300,  480},
         // Neighbours (30" regional layer — smoothed, so peaks read lower)
         {"Mt Olympus (GR)",  40.0856, 22.3586, 1800, 2950},
         {"Damascus (SY)",    33.5100, 36.2900,  600,  800},

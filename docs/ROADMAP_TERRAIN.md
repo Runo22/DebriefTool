@@ -11,9 +11,11 @@ paketinden** (DEM) gerçek Türkiye arazisini üretmek.
 
 > **Durum (güncel):** Faz 0–4 tamamlandı.
 > - Veri + bağımsız okuma kütüphanesi: [`terrain/`](../terrain/) (`tdem`; tek dosya
->   `terrain.tdem`, 44 MB; C++ okuyucu, Python üretici, testler). Komşu ülkeler
+>   `terrain.tdem`, 49 MB; C++ okuyucu, Python üretici, testler). Komşu ülkeler
 >   (Yunanistan, Bulgaristan, Kıbrıs, Gürcistan, Ermenistan, Azerbaycan, Suriye,
->   Irak, …) 30″ (~900 m) bölgesel katmanla eklendi (+4.4 MB).
+>   Irak, …) 30″ (~900 m) bölgesel katmanla eklendi (+4.4 MB); Türkiye'nin
+>   ~100–150 km yakın çevresi (Kıbrıs, kuzey Suriye/Irak, Kafkasya, Ege adaları)
+>   Türkiye ile aynı 7.5″ katmanda.
 > - Gerçekleşen katmanlar: Türkiye 7.5″, Ankara 1″, İncirlik/Çiğli 1″ (40 km),
 >   **Akıncı 5 m (16 km), İncirlik 5 m, Çiğli 5 m (12 km)**; pistler OurAirports
 >   geometrisiyle düzleştirildi (eşik kotları yayınlanan değerlerle 1–3 m içinde).

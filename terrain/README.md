@@ -7,7 +7,7 @@ here depends on AfterAction.
 
 ```
 terrain/
-├── data/terrain.tdem     all layers in one file (44 MB)
+├── data/terrain.tdem     all layers in one file (49 MB)
 ├── include/tdem/tdem.hpp C++ API
 ├── src/tdem.cpp          reader implementation
 ├── third_party/sinfl.h   public-domain DEFLATE decoder (vendored)
@@ -21,7 +21,7 @@ terrain/
 | Layer | Area | Grid | Size |
 |---|---|---|---|
 | `region_30s` | 29–46 N, 19–52 E: Greece, Bulgaria, Cyprus, Georgia, Armenia, Azerbaijan, Syria, Iraq, Lebanon, western Iran … | 30″ (~740–930 m) | 4.4 MB |
-| `turkey_7.5s` | 35.5–42.5 N, 25.5–45.0 E (all of Turkey) | 7.5″ (~180–230 m) | 17.4 MB |
+| `turkey_7.5s` | 34.5–43.5 N, 24.0–46.0 E: Turkey plus a ~100–150 km band around it (Cyprus, northern Syria and Iraq, Armenia, Georgia, Nakhchivan, southern Bulgaria, the Aegean islands) | 7.5″ (~180–230 m) | 22.2 MB |
 | `ankara_1s` | 39.4–40.6 N, 32.0–33.6 E (Esenboğa, Etimesgut, Güvercinlik inside) | 1″ (~24×31 m) | 15.3 MB |
 | `akinci_5m` | Akıncı (LTAE), 16 × 16 km | **5 m** | 2.4 MB |
 | `incirlik_1s` / `incirlik_5m` | İncirlik (LTAG), 40 km / 12 km | 1″ / **5 m** | 1.1 + 1.3 MB |
