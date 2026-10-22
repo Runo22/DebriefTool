@@ -106,6 +106,40 @@ bool tinted_button(const char* label, ImVec4 c, ImVec2 size = {0, 0}) {
     return r;
 }
 
+// LIVE chip: while live, the normal button face with a thin green outline,
+// green text and a pulsing dot; otherwise a plain "back to live" button.
+bool live_button(bool live) {
+    const ImGuiStyle& st = ImGui::GetStyle();
+    const float dot_r = S(3.5f), gap = S(7.0f);
+    const ImVec2 ts = ImGui::CalcTextSize("LIVE");
+    const ImVec2 size{ st.FramePadding.x * 2.0f + dot_r * 2.0f + gap + ts.x, ImGui::GetFrameHeight() };
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+
+    if (live) {
+        const ImVec4 face = st.Colors[ImGuiCol_Button];
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, face);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, face);
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(kGood.x, kGood.y, kGood.z, 0.45f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, std::max(1.0f, S(1.0f)));
+    }
+    const bool clicked = ImGui::Button("##live", size);
+    if (live) { ImGui::PopStyleVar(); ImGui::PopStyleColor(3); }
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 dot{ p.x + st.FramePadding.x + dot_r, p.y + size.y * 0.5f };
+    const ImVec2 text{ dot.x + dot_r + gap, p.y + (size.y - ts.y) * 0.5f };
+    if (live) {
+        const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(ImGui::GetTime()) * 3.0f);
+        dl->AddCircleFilled(dot, dot_r * (1.6f + 0.8f * pulse), ImGui::GetColorU32(ImVec4(kGood.x, kGood.y, kGood.z, 0.18f * (1.0f - pulse))));
+        dl->AddCircleFilled(dot, dot_r, ImGui::GetColorU32(kGood));
+        dl->AddText(text, ImGui::GetColorU32(kGood), "LIVE");
+    } else {
+        dl->AddCircle(dot, dot_r, ImGui::GetColorU32(kDim), 0, std::max(1.0f, S(1.2f)));
+        dl->AddText(text, ImGui::GetColorU32(ImGuiCol_Text), "LIVE");
+    }
+    return clicked;
+}
+
 // A labelled row in a two-column settings table: label left, widget right.
 bool begin_settings_table(const char* id) {
     if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingStretchProp)) return false;
@@ -318,8 +352,9 @@ void AfterActionUI::draw_top_bar(PlaybackController& pb, const TelemetryStore& s
     ImGui::SameLine(0, S(18));
 
     // Transport
-    if (pb.is_live()) tinted_button(ICON_FA_TOWER_BROADCAST "  LIVE", kGood);
-    else if (ImGui::Button(ICON_FA_TOWER_BROADCAST "  LIVE")) pb.stop();
+    if (live_button(pb.is_live()) && !pb.is_live()) pb.stop();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip(pb.is_live() ? "Showing live data" : "Back to live");
     ImGui::SameLine(0, S(4));
     if (ImGui::Button(ICON_FA_BACKWARD_FAST "##rew")) pb.set_speed(-4.0f);
     ImGui::SameLine(0, S(4));
