@@ -8,11 +8,13 @@
 //
 //  Layout:
 //
-//  [ FileHeader   64 bytes  ]
-//  [ SceneOrigin  32 bytes  ]  — optional georeference for ENU positions
+//  [ FileHeader   80 bytes  ]
+//  [ SceneOrigin  32 bytes  ]  — lat/lon the ENU positions are relative to
+//                                 (0,0 = unknown, e.g. very old files)
 //  [ FrameData    variable  ]  — sequential EntityFrames
 //  [ FrameIndex   variable  ]  — sparse seek table; written last
-//  [ Footer        16 bytes ]  — points to index; enables O(log N) seek
+//  [ Footer        16 bytes ]  — points to the index (sparse seek table; the
+//                                 loader currently reads files sequentially)
 //
 //  Frame layout (per saved frame):
 //    FrameHeader (16 bytes)
@@ -50,7 +52,7 @@ static_assert(sizeof(FileHeader) == 80);
 struct SceneOrigin {
     double   lat_deg   = 0.0;  // WGS-84 latitude of local ENU origin
     double   lon_deg   = 0.0;  // WGS-84 longitude
-    double   alt_m     = 0.0;  // altitude above ellipsoid (metres)
+    double   alt_m     = 0.0;  // unused (positions keep absolute MSL altitude)
     uint64_t reserved  = 0;
 };
 static_assert(sizeof(SceneOrigin) == 32);
@@ -72,7 +74,7 @@ struct EntitySnapshot {
     float    velocity[3];
     uint8_t  health;
     char     callsign[net::kCallsignLen];   // v2: 32 bytes (was 8)
-    uint8_t  pad;            // keep struct layout explicit
+    uint8_t  source;         // sender's source_id (was padding, so 0 in older files)
 };
 static_assert(sizeof(EntitySnapshot) == 4+2+2+12+16+12+1+32+1); // 82 bytes
 

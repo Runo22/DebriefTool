@@ -34,9 +34,9 @@ elseif(APPLE)
     add_compile_definitions(AFTERACTION_MACOS)
 endif()
 
-# ── Global flags — applied to ALL targets including submodules ─────────────────
+# ── Global flags — applied to ALL targets including third-party ─────────────────
 #
-#  IMPORTANT: keep this section MINIMAL and submodule-safe.
+#  IMPORTANT: keep this section MINIMAL and safe for third-party code.
 #  Strict flags (/WX, -Werror, /W4, -Wall) go on the `afteraction` target below,
 #  NOT here — otherwise Assimp/Raylib/Flecs warnings become build errors.
 #
@@ -66,6 +66,11 @@ else()
     # Suppress Clang 16+ unsafe-buffer-usage warnings in third-party C code
     add_compile_options(-Wno-unsafe-buffer-usage)
 endif()
+
+# ── Third-party sources are vendored in third_party/ (no submodules, no
+#    downloads), so the project builds on an offline machine. Make sure no
+#    dependency's CMake tries to fetch anything at configure time.
+set(FETCHCONTENT_FULLY_DISCONNECTED ON CACHE BOOL "" FORCE)
 
 # ── Third-party: Raylib ────────────────────────────────────────────────────────
 set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
@@ -114,6 +119,8 @@ set(RLIMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/rlImGui)
 add_library(rlimgui STATIC ${RLIMGUI_DIR}/rlImGui.cpp)
 target_include_directories(rlimgui PUBLIC ${RLIMGUI_DIR})
 target_link_libraries(rlimgui PUBLIC imgui raylib)
+# Icons sized to sit nicely next to the 16 px Barlow UI font.
+target_compile_definitions(rlimgui PRIVATE FONT_AWESOME_ICON_SIZE=14)
 
 # ── Third-party: tinyfiledialogs (native open/save dialogs) ───────────────────
 # Separate lib so our strict /WX doesn't fail on its old C. Native dialog on
@@ -123,6 +130,9 @@ target_include_directories(tinyfd PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 if(WIN32)
     target_link_libraries(tinyfd PUBLIC comdlg32 ole32 user32 shell32)
 endif()
+
+# ── Terrain heights (tdem) — our own standalone library in terrain/ ──────────
+add_subdirectory(terrain)
 
 # ── Third-party: Tracy (optional) ─────────────────────────────────────────────
 if(AFTERACTION_TRACY)
@@ -145,7 +155,7 @@ if(TARGET yaml-cpp)
 endif()
 
 # ── Main executable ────────────────────────────────────────────────────────────
-file(GLOB_RECURSE AFTERACTION_SRC "src/*.cpp" "src/*.hpp")
+file(GLOB_RECURSE AFTERACTION_SRC CONFIGURE_DEPENDS "src/*.cpp" "src/*.hpp")
 
 add_executable(afteraction ${AFTERACTION_SRC})
 
@@ -183,9 +193,10 @@ target_link_libraries(afteraction PRIVATE
     rlimgui
     yaml-cpp
     tinyfd
+    tdem::tdem
 )
 
-# ── Strict flags for OUR code only — NOT propagated to submodules ──────────────
+# ── Strict flags for OUR code only — NOT propagated to third-party ──────────────
 if(MSVC)
     target_compile_options(afteraction PRIVATE
         /W4           # high warning level
@@ -195,23 +206,26 @@ if(MSVC)
         /wd4201       # anonymous struct/union (used in raymath.h headers we include)
         /wd4324       # structure padded due to alignas — intentional in SPSCQueue
     )
-    # NOGDI/NOUSER prevent wingdi.h and winuser.h from being included via winsock2.h
-    # in our TUs. Those headers declare Rectangle() and DrawText() as Win32 API
-    # functions that conflict with raylib's Rectangle struct and DrawText function.
-    # WIN32_LEAN_AND_MEAN trims windows.h for our winsock-using TUs. All applied
-    # per-target so tinyfiledialogs (which needs the full windows.h incl. commdlg)
-    # and GLFW still get the headers they require.
-    target_compile_definitions(afteraction PRIVATE NOGDI NOUSER WIN32_LEAN_AND_MEAN)
 else()
     target_compile_options(afteraction PRIVATE
         -Wall
         -Wextra
         -Wno-unused-parameter
-        -ffast-math
+        # No -ffast-math: it lets the compiler assume NaN/Inf never occur, which
+        # silently breaks isnan/isfinite checks (terrain raycast, model builder).
         # -march=native is commented out for portability across machines;
         # uncomment locally for maximum performance on your build machine.
         # -march=native
     )
+endif()
+
+# NOGDI/NOUSER keep wingdi.h / winuser.h (pulled in by winsock2.h) from
+# declaring Rectangle(), DrawText(), CloseWindow()… which clash with raylib;
+# WIN32_LEAN_AND_MEAN trims the rest. Per-target so tinyfiledialogs (needs the
+# full windows.h incl. commdlg) and GLFW still get what they need. Applies to
+# MSVC and MinGW alike.
+if(WIN32)
+    target_compile_definitions(afteraction PRIVATE NOGDI NOUSER WIN32_LEAN_AND_MEAN)
 endif()
 
 # ── Platform link libs ─────────────────────────────────────────────────────────
@@ -235,13 +249,13 @@ endif()
 # ── Hangar — standalone model preview tool ─────────────────────────────────────
 # Reuses the app's AssetManager (same FBX/OBJ/glTF import + same draw math) so
 # previews match exactly. Lives in tools/ so it isn't swept into afteraction.
-add_executable(hangar tools/hangar.cpp src/render/AssetManager.cpp)
+add_executable(hangar tools/hangar.cpp src/render/AssetManager.cpp src/render/ProceduralModels.cpp)
 target_include_directories(hangar PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${IMGUI_DIR}
 )
 target_link_libraries(hangar PRIVATE raylib assimp imgui rlimgui)
-if(MSVC)
+if(WIN32)
     target_compile_definitions(hangar PRIVATE NOGDI NOUSER)
 endif()
 if(WIN32)
@@ -260,6 +274,18 @@ add_custom_command(TARGET afteraction POST_BUILD
     COMMENT "Copying assets..."
 )
 
+# Terrain data (~50 MB) goes to <bin>/terrain. A separate always-run target,
+# so a new terrain.tdem is copied even when nothing needs re-linking;
+# copy_if_different keeps it cheap.
+file(GLOB TERRAIN_PACKS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/terrain/data/*.tdem)
+list(APPEND TERRAIN_PACKS ${CMAKE_SOURCE_DIR}/terrain/tools/runways_tr.csv)
+add_custom_target(terrain_data ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:afteraction>/terrain
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different ${TERRAIN_PACKS} $<TARGET_FILE_DIR:afteraction>/terrain
+    COMMENT "Copying terrain data..."
+)
+add_dependencies(afteraction terrain_data)
+
 # ── Install — AfterAction only (third-party installs were skipped above) ───────
 include(GNUInstallDirs)
 # App + preview tool go in <prefix>/bin, with assets/ alongside so the app's
@@ -268,6 +294,7 @@ install(TARGETS afteraction RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(TARGETS hangar      RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} OPTIONAL)
 install(DIRECTORY ${CMAKE_SOURCE_DIR}/assets
         DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES ${TERRAIN_PACKS} DESTINATION ${CMAKE_INSTALL_BINDIR}/terrain)
 
 # Ship the runtime libraries the binaries actually NEED to run on a clean machine.
 # All our third-party deps are static-linked, so the only runtime dependency is

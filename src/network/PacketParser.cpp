@@ -43,13 +43,15 @@ PacketParser::parse(std::span<const std::byte> buf) noexcept
         s.source_id    = hdr.source_id;
         s.entity_id    = wire.id;
         s.entity_type  = wire.type;
-        s.timestamp_ns = (wire.time_ns == 0) ? now_ns : wire.time_ns;
+        const uint64_t sent_ns = wire.time_ns;   // copy first: a ?: on the packed member binds a misaligned reference
+        s.timestamp_ns = (sent_ns == 0) ? now_ns : sent_ns;
         s.health       = wire.health;
         s.destroyed    = (wire.health == 0);
 
         // Callsign — copy and ensure null-termination
         std::memcpy(s.callsign, wire.callsign, sizeof(wire.callsign));
         s.callsign[kCallsignLen - 1] = '\0';
+        clean_callsign(s.callsign, kCallsignLen);
 
         s.lat_deg   = wire.lat;
         s.lon_deg   = wire.lon;

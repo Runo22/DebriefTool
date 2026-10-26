@@ -11,19 +11,23 @@ Receives spatial data over UDP, renders it in 3D, records everything, and provid
 ## Quick start (no UDP source needed)
 
 ```bat
-git clone --recurse-submodules <this-repo>
+git clone <this-repo>          :: all dependencies are vendored — works offline
 scripts\bootstrap.bat
 cmake --build build --config Release --parallel
 build\Release\afteraction.exe --demo
 ```
 
-The `--demo` flag runs a built-in scripted scenario (two jets, a missile, an AAA site, and a helicopter) so you can evaluate the tool without any external data source.
+The `--demo` flag runs a built-in scripted scenario at **Akıncı Air Base (LTAE)** —
+a jet taking off from runway 03, two more jets, a missile shot, an air-defence
+site, a helicopter and a convoy following the real terrain — so you can evaluate
+the tool without any external data source.
 
 ---
 
 ## Building
 
-First fetch submodules: `git submodule update --init --recursive`.
+All third-party libraries are vendored in [`third_party/`](third_party/README.md) —
+no submodules and no downloads, so the repository builds on an offline machine.
 
 ### Windows (primary) — CMake presets (Ninja + cl.exe, x64)
 
@@ -124,15 +128,23 @@ All scalar fields are now **doubles** (previously some were 32-bit floats), and 
 
 ### Entity types
 
-| Value | Meaning | Default shape |
+Built-in models are at real size and loosely modelled on Turkish platforms
+(override any of them with your own glTF/FBX/OBJ in Settings → Models):
+
+| Value | Meaning | Built-in model |
 |---|---|---|
-| 0 | Unknown | White cube |
-| 1 | Jet aircraft | Blue cone |
-| 2 | Missile | Red cylinder |
-| 3 | AAA / gun | Dark cylinder |
-| 4 | Ground target | Orange box |
-| 5 | Helicopter | Green sphere |
-| 6 | Ship | Grey box |
+| 0 | Unknown | Diamond marker |
+| 1 | Jet aircraft | KAAN-style fighter |
+| 2 | Missile | Air-to-air missile |
+| 3 | AAA / gun | KORKUT-style tracked twin-gun vehicle |
+| 4 | Ground target | 6×6 armoured vehicle |
+| 5 | Helicopter | T129 ATAK-style (spinning rotors) |
+| 6 | Ship | MİLGEM (Ada-class) corvette |
+| 7 | UAV | ANKA-style MALE UAV (spinning propeller) |
+| 8 | UCAV | ANKA-3-style flying wing |
+| 9 | SAM launcher | HİSAR-O-style 6×6 launcher with raised canisters |
+| 10 | Propeller aircraft | HÜRKUŞ-style turboprop trainer (spinning propeller) |
+| 11 | Transport / support aircraft | C-130-style four-engine turboprop (spinning propellers) |
 
 ### C++ sender example
 
@@ -208,17 +220,43 @@ python scripts/test_sender.py --host 127.0.0.1 --port 22522 --hz 10
 
 ---
 
+## Terrain
+
+AfterAction renders **real terrain for Turkey and its neighbours** from the height data in
+[`terrain/`](terrain/) (copied next to the executable at build time):
+
+| Area | Grid |
+|---|---|
+| Neighbours: Greece, Bulgaria, Cyprus, Georgia, Armenia, Azerbaijan, Syria, Iraq, … (29–46 N, 19–52 E) | 30″ (~740–930 m) |
+| Turkey + ~100–150 km around it (Cyprus, northern Syria/Iraq, Armenia, Georgia, Aegean islands) | 7.5″ (~180–230 m) |
+| Ankara region (Esenboğa, Etimesgut, Güvercinlik) | 1″ (~24–31 m) |
+| İncirlik and İzmir Çiğli surroundings (40 km) | 1″ |
+| **Akıncı** (16 km), **İncirlik**, **Çiğli** (12 km) | **5 m** |
+
+- Heights are metres **MSL**, the same reference as the protocol's `alt`, so the
+  inspector shows **AGL** directly. Runways are levelled and drawn with markings.
+- The scene starts at the **home position** (Akıncı by default; *View → Set home*
+  or *Settings → Terrain*). Live data re-centres the scene only when it arrives
+  more than 250 km away. Recordings remember their origin.
+- *View → Terrain*: tactical grid, shaded, shaded + grid, or contour lines.
+  *Vertical scale* stretches terrain **and** tracks together.
+- The top bar shows the latitude/longitude/elevation under the mouse; the
+  minimap is a hillshade of the area around the tracks (click to look there).
+
+The terrain library (`tdem`) and its data are self-contained and reusable in
+other projects — see [`terrain/README.md`](terrain/README.md).
+
+---
+
 ## Adding 3D Models
 
 The app ships with coloured procedural shapes as built-in defaults. To load proper models:
 
 1. Drop an **FBX**, **OBJ**, or **glTF/GLB** file into `assets/models/`
-2. Add two lines to `Application::init_assets()` in [`src/app/Application.cpp`](src/app/Application.cpp):
-
-```cpp
-assets_.load("jet", "assets/models/jet.glb", 0.01f);  // 0.01 if model is in cm
-assets_.map_type(net::TYPE_JET, "jet");
-```
+2. Bind it to an entity type in **Settings → Models** (applies live; *Save
+   manifest* writes `assets/models.yaml`), or edit `assets/models.yaml` directly.
+   Preview scale/rotation with the `hangar` tool. Details:
+   [`docs/ROADMAP_MODELS.md`](docs/ROADMAP_MODELS.md).
 
 ### Free model sources
 
@@ -234,16 +272,35 @@ assets_.map_type(net::TYPE_JET, "jet");
 
 | Input | Action |
 |---|---|
-| **Mouse drag** | Orbit camera |
+| **Left click** | Select track (double-click in the list = focus) |
+| **Right drag** | Orbit camera |
+| **Middle drag** / **WASD** | Pan (Shift = faster) |
 | **Mouse wheel** | Zoom |
 | **Space** | Play / Pause |
 | **1** | Slow motion (×0.25) |
 | **2** | Real-time (×1) |
 | **3** | Fast-forward (×4) |
 | **4** | Rewind (×−1) |
-| **F** | Follow / unfollow selected entity |
+| **F** | Focus / unfocus selected track |
+| **G** | Chase camera on selected track (mouse wheel: distance behind it) |
+| **H** | Fly to the home position |
 | **R** | Toggle Line / Ribbon trail mode |
-| **Esc** | Quit |
+| **Esc** | Close Settings, then clear the selection |
+| **Ctrl+Q** | Quit |
+
+---
+
+## Settings
+
+The gear button opens **Settings** (General · Display · Camera · Terrain ·
+Network · Recording · Models · Shortcuts). Changes apply immediately and are
+saved automatically to `afteraction_config.yaml` next to the executable.
+
+- **General** — interface scale (75–200 %, for high-DPI screens) and units:
+  altitude ft / m, speed kt / km/h / m/s, coordinates DMS / DDM / decimal.
+- **Network** — bind address and port with a live listener status; a
+  `--port` / `--addr` on the command line overrides them for that run.
+- **Recording** — dashcam length and the recordings folder.
 
 ---
 
@@ -257,6 +314,9 @@ afteraction.exe [options]
   --addr  IP        Bind address   (default 0.0.0.0)
   --width  N        Window width   (default 1600)
   --height N        Window height  (default 900)
+  --terrain DIR     Terrain packs  (default <exe dir>/terrain)
+  --open FILE       Open a .aar recording or .csv log at startup
+                    (a bare file argument works too, e.g. from the shell)
 ```
 
 ---
@@ -264,10 +324,12 @@ afteraction.exe [options]
 ## Features
 
 - **Live 3D rendering** — entities rendered with custom models or built-in shapes
+- **Real terrain** — Turkey + neighbours DEM with 5 m detail at Akıncı, İncirlik and Çiğli; runway overlays, contours, AGL
+- **Inspector** — position (DMS), MSL / AGL / ground elevation, speed, vertical speed, heading / pitch / roll
 - **Smooth interpolation** — cubic Hermite splines between telemetry keyframes; fluid at 60 FPS even with 5–10 Hz update rates
 - **Trails** — line or camera-facing ribbon mode
 - **VCR playback** — play, pause, fast-forward (×0.25 to ×8), rewind, scrub
-- **Timeline** — ImPlot-powered scrubber with altitude chart for the selected entity
+- **Timeline** — scrubber plus altitude / speed chart with the terrain profile under the selected track
 - **Dashcam buffer** — "Save Last N Seconds" saves a rolling window to disk instantly
 - **Custom binary format** (`.aar`) — sparse-indexed for O(log N) seek
 - **CSV import** — flexible column-mapping for importing logs from flight sims or DCS
@@ -279,12 +341,13 @@ afteraction.exe [options]
 
 ```
 UDP Recv Thread ──SPSC queue──► Main Thread
-                                 ├─ lat/lon → ENU conversion
+                                 ├─ lat/lon → world (GeoFrame, shared with terrain)
                                  ├─ Euler → quaternion
                                  ├─ Flecs ECS (interpolation + trail systems)
                                  ├─ TelemetryStore (dashcam ring buffer)
                                  ├─ Recorder (async disk I/O thread)
                                  └─ Raylib + ImGui render loop
+Terrain workers ──meshes──────►  TerrainSystem (quadtree LOD from terrain.tdem)
 ```
 
 **Stack:** C++23 · CMake · [Raylib](https://raylib.com) · [Flecs 4](https://github.com/SanderMertens/flecs) · [Dear ImGui](https://github.com/ocornut/imgui) · [ImPlot](https://github.com/epezent/implot) · [Assimp](https://github.com/assimp/assimp) · [rlImGui](https://github.com/raylib-extras/rlImGui)
