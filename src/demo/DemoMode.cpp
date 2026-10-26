@@ -140,6 +140,16 @@ void DemoMode::reset() {
         f.max_climb = 12.0;
         flyers_.push_back(f);
     }
+    // HERKUL1 — C-130-style transport on a wide racetrack at 3 500 m south-west.
+    {
+        Flyer f{12, net::TYPE_TRANSPORT, "HERKUL1"};
+        f.route = { { -14000,  6000, 3500, 140, false }, {  -2000, 14000, 3500, 140, false },
+                    {   4000, 10000, 3500, 140, false }, {  -8000,  2000, 3500, 140, false } };
+        f.x = -16000; f.z = 2000; f.alt = 3500; f.speed = 140; f.hdg = 40;
+        f.max_turn = 2.5;
+        f.max_climb = 8.0;
+        flyers_.push_back(f);
+    }
     // CONVOY1 — ground vehicle loop on the plain south-east of the base.
     {
         Flyer f{7, net::TYPE_GROUND, "CONVOY1"};

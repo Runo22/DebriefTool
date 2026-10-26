@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
     const bool builtin = path.empty();
     const bool ok = builtin || assets.load("preview", path, 1.0f);
     if (ok && !builtin) assets.map_type(0, "preview");
-    static const char* kTypeNames[] = { "Unknown", "Jet", "Missile", "AAA", "Ground", "Helo", "Ship", "UAV", "UCAV", "SAM", "Prop" };
+    static const char* kTypeNames[] = { "Unknown", "Jet", "Missile", "AAA", "Ground", "Helo", "Ship", "UAV", "UCAV", "SAM", "Prop", "Transport" };
     int builtin_type = net::TYPE_JET;
     const ModelEntry* me = nullptr;
 

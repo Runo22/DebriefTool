@@ -474,6 +474,65 @@ ModelEntry make_prop_trainer() {
     return e;
 }
 
+// ── C-130-style tactical transport ───────────────────────────────────────────
+ModelEntry make_transport() {
+    const Color body{ 132, 138, 146, 255 }, dark{ 34, 36, 40, 255 }, glass{ 52, 66, 80, 255 };
+    const Color nacelle{ 120, 126, 134, 255 }, radome{ 96, 100, 106, 255 };
+    MeshBuilder b;
+    // Fuselage: blunt radome nose, constant box-round cabin, upswept tail over the ramp.
+    b.loft({ { -14.90f, -0.20f, 0.30f, 0.30f, 2.0f, radome },
+             { -14.40f, -0.15f, 1.20f, 1.30f, 2.0f, radome },
+             { -13.90f, -0.05f, 1.65f, 1.80f, 2.2f, radome },
+             { -13.90f, -0.05f, 1.65f, 1.80f, 2.2f, body },
+             { -12.40f,  0.05f, 2.05f, 2.20f, 2.4f, body },
+             { -10.00f,  0.10f, 2.20f, 2.35f, 2.6f, body },
+             {   5.50f,  0.10f, 2.20f, 2.35f, 2.6f, body },
+             {   7.80f,  0.60f, 2.00f, 1.90f, 2.4f, body },
+             {  10.50f,  1.35f, 1.50f, 1.20f, 2.2f, body },
+             {  13.20f,  1.95f, 0.80f, 0.60f, 2.0f, body },
+             {  14.80f,  2.25f, 0.20f, 0.22f, 2.0f, body } }, 24, true);
+    // Flight-deck glazing: a shallow dark band over the nose.
+    b.loft({ { -14.25f, 0.90f, 0.20f, 0.10f, 2.0f, glass },
+             { -13.85f, 1.25f, 1.45f, 0.72f, 2.4f, glass },
+             { -12.90f, 1.62f, 1.75f, 0.80f, 2.4f, glass },
+             { -12.10f, 1.75f, 1.70f, 0.72f, 2.4f, glass },
+             { -12.10f, 1.75f, 1.70f, 0.72f, 2.4f, body },
+             { -10.80f, 1.85f, 1.10f, 0.50f, 2.2f, body },
+             {  -9.80f, 1.90f, 0.10f, 0.05f, 2.0f, body } }, 18, false);
+    // Main-gear sponsons along the lower sides.
+    for (float sx : { -1.0f, 1.0f })
+        b.loft({ { -3.60f, -1.45f, 0.10f, 0.10f, 2.0f, body, sx * 2.05f },
+                 { -2.60f, -1.45f, 0.55f, 0.80f, 2.6f, body, sx * 2.05f },
+                 {  2.80f, -1.45f, 0.55f, 0.80f, 2.6f, body, sx * 2.05f },
+                 {  3.80f, -1.45f, 0.10f, 0.10f, 2.0f, body, sx * 2.05f } }, 14, false);
+    // High wing with slight dihedral.
+    b.wing_pair({ 2.0f, 2.25f, -2.6f }, 4.9f, { 20.2f, 2.65f, -1.3f }, 2.5f, 0.15f, body);
+    // Four turboprop nacelles hanging forward of the wing, with spinners.
+    const float nx[2] = { 5.1f, 10.6f };
+    for (float sx : { -1.0f, 1.0f })
+        for (float x : nx) {
+            const float cx = sx * x, cy = 2.05f;
+            b.loft({ { -7.05f, cy, 0.10f, 0.10f, 2.0f, dark, cx },
+                     { -6.90f, cy, 0.30f, 0.30f, 2.0f, dark, cx },
+                     { -6.60f, cy, 0.48f, 0.48f, 2.0f, nacelle, cx },
+                     { -5.80f, cy - 0.05f, 0.62f, 0.78f, 2.4f, nacelle, cx },
+                     { -1.00f, cy - 0.05f, 0.62f, 0.80f, 2.4f, nacelle, cx },
+                     {  1.80f, cy + 0.05f, 0.32f, 0.40f, 2.2f, nacelle, cx } }, 14, true);
+        }
+    // Tail: big fin and tailplane set on the upswept rear fuselage.
+    b.wing({ 0.0f, 2.30f, 7.6f }, 6.6f, { 0.0f, 9.60f, 11.9f }, 3.0f, 0.12f, body);
+    b.wing_pair({ 0.5f, 2.45f, 10.2f }, 4.3f, { 8.0f, 2.55f, 12.3f }, 2.1f, 0.11f, body);
+
+    ModelEntry e;
+    e.model = b.build();
+    e.length = 40.4f;   // span (larger than the 29.8 m length)
+    for (float sx : { -1.0f, 1.0f })
+        for (float x : nx)
+            e.spinners.push_back({ make_rotor(4, 2.05f, 0.42f, { 0, 0, 1 }, dark),
+                                   { sx * x, 2.05f, -7.0f }, { 0, 0, 1 }, sx > 0 ? 5.0f : 5.3f });
+    return e;
+}
+
 // ── Air-to-air missile ───────────────────────────────────────────────────────
 ModelEntry make_missile() {
     const Color white{ 226, 228, 230, 255 }, nose{ 64, 66, 70, 255 }, band{ 170, 140, 40, 255 };
@@ -648,6 +707,7 @@ void build_procedural_models(std::unordered_map<uint16_t, ModelEntry>& out, Mode
     out[net::TYPE_UCAV]    = make_ucav();
     out[net::TYPE_SAM]     = make_sam();
     out[net::TYPE_PROP]    = make_prop_trainer();
+    out[net::TYPE_TRANSPORT] = make_transport();
     out[net::TYPE_MISSILE] = make_missile();
     out[net::TYPE_AAA]     = make_air_defence();
     out[net::TYPE_GROUND]  = make_armour();

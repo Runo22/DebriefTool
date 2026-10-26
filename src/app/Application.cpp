@@ -684,6 +684,7 @@ flecs::entity Application::get_or_create_entity(const net::EntityState& state) {
         case net::TYPE_UCAV:    trail_init.color = {150, 110, 255, 200 }; break; // indigo
         case net::TYPE_SAM:     trail_init.color = {240, 200,  60, 180 }; break; // yellow
         case net::TYPE_PROP:    trail_init.color = { 90, 215, 205, 200 }; break; // teal
+        case net::TYPE_TRANSPORT: trail_init.color = {170, 188, 214, 190 }; break; // steel
         case net::TYPE_SHIP:    trail_init.color = {160, 160, 220, 180 }; break; // lavender
         default:                trail_init.color = {  0, 200, 255, 180 }; break; // cyan
     }
