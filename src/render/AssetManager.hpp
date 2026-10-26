@@ -51,11 +51,15 @@ struct ModelEntry {
     std::vector<Spinner> spinners;
 };
 
-// CPU-side parsed mesh (no GPU handles). Produced by the worker thread; uploaded
+// CPU-side parsed model (no GPU handles). Produced by the worker thread; uploaded
 // to the GPU on the main thread. Keeps the slow Assimp work off the render thread.
+// Split into parts of at most 65535 vertices (raylib meshes use 16-bit indices).
 struct CpuMesh {
-    std::vector<float>          vertices, normals, texcoords;
-    std::vector<unsigned short> indices;
+    struct Part {
+        std::vector<float>          vertices, normals, texcoords;
+        std::vector<unsigned short> indices;
+    };
+    std::vector<Part> parts;
 };
 
 class AssetManager {
@@ -145,6 +149,7 @@ private:
     std::deque<LoadJob>      jobs_;
     std::mutex               ready_mu_;
     std::vector<ReadyModel>  ready_models_;
+    std::vector<uint16_t>    repoint_pending_;   // types re-bound to an already-loaded model
     std::atomic<int>         inflight_{0};   // queued + parsing, not yet uploaded
 };
 

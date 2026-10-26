@@ -166,7 +166,8 @@ private:
     Font          label_font_{};   // 3D labels (Barlow SemiBold)
 
     // Minimap hillshade: built on a worker, uploaded here.
-    struct MapKey { float cx = 0, cz = 0, range = 0; };
+    struct MapKey { float cx = 0, cz = 0, range = 0; uint32_t origin = 0; };
+    uint32_t      origin_epoch_ = 0;   // bumped by set_origin (old maps are discarded)
     Texture2D     minimap_tex_{};
     MapKey        minimap_key_{}, minimap_pending_key_{};
     std::future<std::vector<unsigned char>> minimap_job_;
@@ -181,6 +182,12 @@ private:
     // behind the newest sample, so tracks interpolate between packets instead
     // of stepping to each one (and cameras following them stay smooth).
     void     note_live_sample(uint64_t ts_ns);
+    // Each sender's clock mapped onto ours: its own spacing between samples is
+    // kept (smooth motion) but anchored to local time, so several senders,
+    // skewed clocks or a sender restarting don't scramble the timeline.
+    uint64_t to_local_time(uint32_t source_id, uint64_t ts_ns);
+    std::unordered_map<uint32_t, int64_t> source_offset_ns_;
+    bool     was_live_ = true;
     uint64_t advance_live_clock(float dt);
     uint64_t live_newest_ns_ = 0;      // newest sample timestamp
     double   live_newest_at_ = 0.0;    // GetTime() when it arrived

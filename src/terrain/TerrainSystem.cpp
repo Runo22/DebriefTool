@@ -244,7 +244,9 @@ void TerrainSystem::set_frame(const GeoFrame& frame) {
     worker_frame_ = frame;
     ++epoch_;
     queue_.clear();
-    for (auto& b : done_) { free_cpu_mesh(b.mesh); }
+    // Built-but-not-uploaded chunks are dropped: forget them as in flight too,
+    // or update() would never request them again.
+    for (auto& b : done_) { in_flight_.erase(b.key); free_cpu_mesh(b.mesh); }
     done_.clear();
 }
 

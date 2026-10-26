@@ -23,6 +23,7 @@
 #  pragma GCC diagnostic pop
 #endif
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -34,11 +35,21 @@ namespace afteraction {
 namespace {
 
 // Read `node[a][b]` (or legacy flat `node[legacy]`) into `out` if present.
+// A value that doesn't parse (e.g. "1,25") keeps its default and only that
+// key is skipped — not every key after it.
 template <typename T>
 void read(const YAML::Node& root, const char* section, const char* key, T& out,
           const char* legacy = nullptr) {
-    if (root[section] && root[section][key]) { out = root[section][key].as<T>(); return; }
-    if (legacy && root[legacy]) out = root[legacy].as<T>();
+    try {
+        if (root[section] && root[section][key]) { out = root[section][key].as<T>(); return; }
+        if (legacy && root[legacy]) out = root[legacy].as<T>();
+    } catch (const YAML::Exception& e) {
+        std::cerr << "Config: ignoring " << section << "." << key << ": " << e.what() << "\n";
+    }
+}
+
+void clamp_to(float& v, float lo, float hi, float def) {
+    v = std::isfinite(v) ? std::clamp(v, lo, hi) : def;
 }
 
 const char* alt_name(AltUnit u)     { return u == AltUnit::Metres ? "m" : "ft"; }
@@ -102,6 +113,27 @@ void ConfigManager::load_config(UIState& state, const std::string& path) {
     } catch (const YAML::Exception& e) {
         std::cerr << "Config load failed: " << e.what() << "\n";
     }
+    clamp_settings(state);
+}
+
+void ConfigManager::clamp_settings(UIState& s) {
+    static const UIState d{};
+    clamp_to(s.ui_scale,             0.75f, 2.0f,      d.ui_scale);
+    clamp_to(s.camera_fov,           20.0f, 110.0f,    d.camera_fov);
+    clamp_to(s.mouse_sensitivity,    0.05f, 5.0f,      d.mouse_sensitivity);
+    clamp_to(s.camera_yaw,           -1e6f, 1e6f,      d.camera_yaw);
+    clamp_to(s.camera_pitch,         -89.0f, 89.0f,    d.camera_pitch);
+    clamp_to(s.camera_distance,      30.0f, 900000.0f, d.camera_distance);
+    clamp_to(s.entity_3d_scale,      0.1f, 10.0f,      d.entity_3d_scale);
+    clamp_to(s.trail_width_override, 1.0f, 2000.0f,    d.trail_width_override);
+    clamp_to(s.timeline_height,      100.0f, 1000.0f,  d.timeline_height);
+    clamp_to(s.altitude_exaggerate,  1.0f, 10.0f,      d.altitude_exaggerate);
+    clamp_to(s.terrain_detail,       0.5f, 6.0f,       d.terrain_detail);
+    clamp_to(s.far_clip_plane,       5000.0f, 5e6f,    d.far_clip_plane);
+    clamp_to(s.dashcam_secs,         5.0f, 900.0f,     d.dashcam_secs);
+    s.terrain_mode = std::clamp(s.terrain_mode, 0, 4);
+    if (!std::isfinite(s.origin_lat) || std::fabs(s.origin_lat) > 89.0) s.origin_lat = d.origin_lat;
+    if (!std::isfinite(s.origin_lon) || std::fabs(s.origin_lon) > 180.0) s.origin_lon = d.origin_lon;
 }
 
 std::string ConfigManager::to_yaml(const UIState& state) {
@@ -160,13 +192,19 @@ bool ConfigManager::save_text(const std::string& path, const std::string& text) 
         std::ofstream f(tmp, std::ios::binary | std::ios::trunc);
         if (!f) return false;
         f << text;
-        if (!f) return false;
+        f.close();                       // flush now: a full disk must fail here,
+        if (!f) {                        // not after the real file was replaced
+            std::error_code rm;
+            std::filesystem::remove(tmp, rm);
+            return false;
+        }
     }
     std::error_code ec;
     std::filesystem::rename(tmp, path, ec);
     if (ec) {   // e.g. Windows refusing to replace: fall back to copy
         std::filesystem::copy_file(tmp, path, std::filesystem::copy_options::overwrite_existing, ec);
-        std::filesystem::remove(tmp, ec);
+        std::error_code rm;              // separate code: removing the temp must not hide a copy failure
+        std::filesystem::remove(tmp, rm);
     }
     return !ec;
 }

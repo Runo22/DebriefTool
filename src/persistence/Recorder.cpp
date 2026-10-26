@@ -15,6 +15,8 @@ bool Recorder::start(const std::filesystem::path& path,
     if (recording_.load()) return false;
     path_ = path;
 
+    if (file_.is_open()) file_.close();   // left open by a failed earlier recording
+    file_.clear();
     file_.open(path, std::ios::binary | std::ios::trunc);
     if (!file_) return false;
 
@@ -110,6 +112,7 @@ void Recorder::write_frame(const WriteCmd& cmd) {
         std::memcpy(snap.orientation, e.orientation, sizeof(snap.orientation));
         std::memcpy(snap.velocity,    e.velocity,    sizeof(snap.velocity));
         snap.health    = e.health;
+        snap.source    = static_cast<uint8_t>(e.source_id);
         std::memcpy(snap.callsign,    e.callsign,    sizeof(snap.callsign));
         file_.write(reinterpret_cast<const char*>(&snap), sizeof(snap));
     }
@@ -118,7 +121,11 @@ void Recorder::write_frame(const WriteCmd& cmd) {
 }
 
 void Recorder::finalise() {
-    if (!file_) return;
+    if (!file_) {   // a write failed (e.g. disk full): close so the next start() can open
+        file_.close();
+        file_.clear();
+        return;
+    }
 
     // Write frame index.
     uint64_t index_offset = static_cast<uint64_t>(file_.tellp());
@@ -194,6 +201,7 @@ bool Recorder::export_slice(const TelemetryStore& store,
             std::memcpy(es.orientation, e.orientation, sizeof(es.orientation));
             std::memcpy(es.velocity,    e.velocity,    sizeof(es.velocity));
             es.health    = e.health;
+            es.source    = static_cast<uint8_t>(e.source_id);
             std::memcpy(es.callsign,    e.callsign,    sizeof(es.callsign));
             f.write(reinterpret_cast<const char*>(&es), sizeof(es));
         }
@@ -209,7 +217,8 @@ bool Recorder::export_slice(const TelemetryStore& store,
     // Patch header.
     f.seekp(0);
     f.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
-    return true;
+    f.close();
+    return !f.fail();
 }
 
 // ── .aar loader ──────────────────────────────────────────────────────────────
@@ -251,6 +260,7 @@ bool Recorder::load_into(const std::filesystem::path& path,
             if (!f) break;
 
             net::EntityState s{};
+            s.source_id   = snap.source;
             s.entity_id   = snap.entity_id;
             s.entity_type = snap.type;
             s.health      = snap.health;
@@ -265,6 +275,7 @@ bool Recorder::load_into(const std::filesystem::path& path,
         store.ingest(fh.timestamp_ns, entities);
     }
 
+    store.flush_pending();
     store.rebuild_entity_histories();
     return true;
 }

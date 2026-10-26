@@ -51,6 +51,7 @@ void register_systems(flecs::world& world) {
 
                 for (auto i : it) {
                     const auto& h  = hist_arr[i].hist;
+                    if (h.count == 0) continue;   // no live data (e.g. a track from a file)
                     const auto  br = h.bracket(target_ns);
 
                     const auto& klo = *br.lo;

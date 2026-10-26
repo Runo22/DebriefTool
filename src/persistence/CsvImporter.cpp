@@ -21,6 +21,12 @@ static std::string trim(const std::string& s) {
 }
 
 static double to_d(const std::string& s) { return std::strtod(s.c_str(), nullptr); }
+// Seconds × scale → ns; negative / NaN / huge values (UB in a plain cast) give 0 or saturate.
+static uint64_t to_ns(double v, double scale) {
+    const double ns = v * scale;
+    if (!(ns > 0.0)) return 0;
+    return ns >= 1.8e19 ? UINT64_MAX : static_cast<uint64_t>(ns);
+}
 static uint64_t to_u64(const std::string& s) { return std::strtoull(s.c_str(), nullptr, 10); }
 
 // Aviation Euler → quaternion (x,y,z,w), matching Application::euler_to_quat:
@@ -67,20 +73,21 @@ std::optional<net::EntityState> CsvImporter::parse_row(
     uint64_t& base_time_ns) const noexcept
 {
     net::EntityState s{};
+    s.source_id = default_source_id;
     bool have_time = false;
     bool have_euler = false;
 
     const size_t n = std::min(headers.size(), values.size());
     for (size_t i = 0; i < n; ++i) {
-        auto it = mappings_.find(headers[i]);
+        auto it = mappings_.find(lower(headers[i]));
         if (it == mappings_.end()) continue;
         const std::string& v = values[i];
         if (v.empty()) continue;
 
         switch (it->second) {
         case CsvField::Ignore: break;
-        case CsvField::TimestampSec: s.timestamp_ns = (uint64_t)(to_d(v) * 1e9); have_time = true; break;
-        case CsvField::TimestampMs:  s.timestamp_ns = (uint64_t)(to_d(v) * 1e6); have_time = true; break;
+        case CsvField::TimestampSec: s.timestamp_ns = to_ns(to_d(v), 1e9); have_time = true; break;
+        case CsvField::TimestampMs:  s.timestamp_ns = to_ns(to_d(v), 1e6); have_time = true; break;
         case CsvField::TimestampNs:  s.timestamp_ns = to_u64(v);                 have_time = true; break;
         case CsvField::EntityId:     s.entity_id    = (uint32_t)to_u64(v); break;
         case CsvField::EntityType:   s.entity_type  = (uint16_t)to_u64(v); break;
@@ -125,6 +132,7 @@ size_t CsvImporter::import(const std::filesystem::path& path, RowCallback cb) co
 
     if (has_header) {
         if (!std::getline(f, line)) return 0;
+        if (line.rfind("\xEF\xBB\xBF", 0) == 0) line.erase(0, 3);   // UTF-8 BOM ("CSV UTF-8" from Excel)
         headers = split_line(line);
     }
 

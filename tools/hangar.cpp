@@ -148,7 +148,9 @@ int main(int argc, char** argv) {
             ImGui::TextDisabled("Check the path and that it's FBX/OBJ/glTF.");
         } else {
             ImGui::Text("File:  %s", GetFileName(path.c_str()));
-            ImGui::Text("Verts: %d", me->model.meshCount ? me->model.meshes[0].vertexCount : 0);
+            int verts = 0;
+            for (int i = 0; i < me->model.meshCount; ++i) verts += me->model.meshes[i].vertexCount;
+            ImGui::Text("Verts: %d (%d meshes)", verts, me->model.meshCount);
             ImGui::Text("Size (model units): %.2f x %.2f x %.2f", dim.x, dim.y, dim.z);
             ImGui::Separator();
             ImGui::TextDisabled("Base rotation — align the nose to the CYAN forward axis (-Z):");

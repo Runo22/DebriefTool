@@ -1,6 +1,7 @@
 #include "AssetManager.hpp"
 #include "ProceduralModels.hpp"
 #include <assimp/Importer.hpp>
+#include <assimp/config.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 #if defined(__GNUC__)
@@ -13,6 +14,7 @@
 #endif
 #include <rlgl.h>
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
@@ -178,12 +180,23 @@ void AssetManager::request_load(const std::string& name,
                                 uint16_t type, float import_scale,
                                 Color tint, Quaternion base_rot) noexcept
 {
-    if (named_.contains(name)) { map_type(type, name); return; }
+    // One entry per file *and* settings: loading a file again with a different
+    // scale / tint / rotation must not silently reuse the old entry.
+    char params[160];
+    std::snprintf(params, sizeof(params), "|%g|%u,%u,%u|%g,%g,%g,%g", import_scale, tint.r, tint.g, tint.b,
+                  base_rot.x, base_rot.y, base_rot.z, base_rot.w);
+    const std::string key = name + params;
+    if (named_.contains(key)) {
+        map_type(type, key);
+        repoint_pending_.push_back(type);   // existing tracks pick it up next pump
+        return;
+    }
+    const std::string& job_name = key;
     if (!worker_run_.exchange(true))
         worker_ = std::thread(&AssetManager::worker_loop, this);
     {
         std::lock_guard lk(jobs_mu_);
-        jobs_.push_back({name, path, type, import_scale, tint, base_rot});
+        jobs_.push_back({job_name, path, type, import_scale, tint, base_rot});
     }
     inflight_.fetch_add(1);
     jobs_cv_.notify_one();
@@ -209,14 +222,15 @@ void AssetManager::worker_loop() {
 }
 
 std::vector<uint16_t> AssetManager::pump_uploads(int budget) noexcept {
-    std::vector<uint16_t> updated;
+    std::vector<uint16_t> updated = std::move(repoint_pending_);
+    repoint_pending_.clear();
     for (int i = 0; i < budget; ++i) {
         ReadyModel rm;
         {
             std::lock_guard lk(ready_mu_);
             if (ready_models_.empty()) break;
-            rm = std::move(ready_models_.back());
-            ready_models_.pop_back();
+            rm = std::move(ready_models_.front());          // in request order
+            ready_models_.erase(ready_models_.begin());
         }
         inflight_.fetch_sub(1);
         if (!rm.ok) {
@@ -224,9 +238,15 @@ std::vector<uint16_t> AssetManager::pump_uploads(int budget) noexcept {
                      rm.job.path.string().c_str());
             continue;
         }
+        if (named_.contains(rm.job.name)) {
+            // The same file+settings was requested twice before the first finished.
+            map_type(rm.job.type, rm.job.name);
+            updated.push_back(rm.job.type);
+            continue;
+        }
         ModelEntry e;
         if (upload_cpu(rm.cpu, rm.job.scale, rm.job.tint, rm.job.base_rot, e)) {
-            named_[rm.job.name] = std::move(e);   // GPU upload on the main thread
+            named_.emplace(rm.job.name, std::move(e));   // GPU upload on the main thread
             map_type(rm.job.type, rm.job.name);
             updated.push_back(rm.job.type);
             TraceLog(LOG_INFO, "AssetManager: model ready for type %u ('%s')",
@@ -263,10 +283,14 @@ bool AssetManager::parse_file(const std::filesystem::path& path, CpuMesh& out) n
 {
     Assimp::Importer importer;
     importer.SetPropertyFloat(AI_CONFIG_GLOBAL_SCALE_FACTOR_KEY, 1.0f);
+    importer.SetPropertyInteger(AI_CONFIG_PP_SLM_VERTEX_LIMIT, 65535);
 
+    // PreTransformVertices bakes the node hierarchy (parts placed by their node
+    // transforms); SplitLargeMeshes keeps every mesh within 16-bit indices.
     const aiScene* scene = importer.ReadFile(path.string(),
         aiProcess_Triangulate | aiProcess_GenSmoothNormals |
-        aiProcess_JoinIdenticalVertices | aiProcess_OptimizeMeshes |
+        aiProcess_JoinIdenticalVertices | aiProcess_PreTransformVertices |
+        aiProcess_SplitLargeMeshes | aiProcess_OptimizeMeshes |
         aiProcess_FlipUVs | aiProcess_GlobalScale);
 
     if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode) {
@@ -275,56 +299,82 @@ bool AssetManager::parse_file(const std::filesystem::path& path, CpuMesh& out) n
         return false;
     }
 
-    unsigned short vert_offset = 0;
+    // Pack the meshes into parts of at most 65535 vertices.
+    constexpr uint32_t kMaxVerts = 65535;
     for (uint32_t mi = 0; mi < scene->mNumMeshes; ++mi) {
         const aiMesh* m = scene->mMeshes[mi];
         if (!m->HasPositions()) continue;
+        if (m->mNumVertices > kMaxVerts) {
+            TraceLog(LOG_WARNING, "AssetManager: '%s': skipping a mesh with %u vertices",
+                     path.filename().string().c_str(), m->mNumVertices);
+            continue;
+        }
+        if (out.parts.empty() || out.parts.back().vertices.size() / 3 + m->mNumVertices > kMaxVerts)
+            out.parts.emplace_back();
+        CpuMesh::Part& part = out.parts.back();
+        const auto vert_offset = static_cast<uint32_t>(part.vertices.size() / 3);
 
         for (uint32_t vi = 0; vi < m->mNumVertices; ++vi) {
-            out.vertices.push_back(m->mVertices[vi].x);
-            out.vertices.push_back(m->mVertices[vi].y);
-            out.vertices.push_back(m->mVertices[vi].z);
+            part.vertices.push_back(m->mVertices[vi].x);
+            part.vertices.push_back(m->mVertices[vi].y);
+            part.vertices.push_back(m->mVertices[vi].z);
             if (m->HasNormals()) {
-                out.normals.push_back(m->mNormals[vi].x);
-                out.normals.push_back(m->mNormals[vi].y);
-                out.normals.push_back(m->mNormals[vi].z);
-            } else { out.normals.push_back(0); out.normals.push_back(1); out.normals.push_back(0); }
+                part.normals.push_back(m->mNormals[vi].x);
+                part.normals.push_back(m->mNormals[vi].y);
+                part.normals.push_back(m->mNormals[vi].z);
+            } else { part.normals.push_back(0); part.normals.push_back(1); part.normals.push_back(0); }
             if (m->HasTextureCoords(0)) {
-                out.texcoords.push_back(m->mTextureCoords[0][vi].x);
-                out.texcoords.push_back(m->mTextureCoords[0][vi].y);
-            } else { out.texcoords.push_back(0); out.texcoords.push_back(0); }
+                part.texcoords.push_back(m->mTextureCoords[0][vi].x);
+                part.texcoords.push_back(m->mTextureCoords[0][vi].y);
+            } else { part.texcoords.push_back(0); part.texcoords.push_back(0); }
         }
         for (uint32_t fi = 0; fi < m->mNumFaces; ++fi) {
             const aiFace& f = m->mFaces[fi];
             if (f.mNumIndices != 3) continue;
-            out.indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[0]));
-            out.indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[1]));
-            out.indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[2]));
+            part.indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[0]));
+            part.indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[1]));
+            part.indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[2]));
         }
-        vert_offset += static_cast<unsigned short>(m->mNumVertices);
     }
-    return !out.vertices.empty();
+    while (!out.parts.empty() && out.parts.back().vertices.empty()) out.parts.pop_back();
+    return !out.parts.empty();
 }
 
 // GPU upload of a parsed CpuMesh — MAIN THREAD ONLY (raylib GL calls).
 bool AssetManager::upload_cpu(const CpuMesh& cpu, float scale, Color tint,
                               Quaternion base_rot, ModelEntry& out) noexcept
 {
-    if (cpu.vertices.empty()) return false;
-    Mesh mesh{};
-    mesh.vertexCount   = static_cast<int>(cpu.vertices.size() / 3);
-    mesh.triangleCount = static_cast<int>(cpu.indices.size()  / 3);
-    mesh.vertices  = (float*)MemAlloc((unsigned)(cpu.vertices.size()  * sizeof(float)));
-    mesh.normals   = (float*)MemAlloc((unsigned)(cpu.normals.size()   * sizeof(float)));
-    mesh.texcoords = (float*)MemAlloc((unsigned)(cpu.texcoords.size() * sizeof(float)));
-    mesh.indices   = (unsigned short*)MemAlloc((unsigned)(cpu.indices.size() * sizeof(unsigned short)));
-    std::memcpy(mesh.vertices,  cpu.vertices.data(),  cpu.vertices.size()  * sizeof(float));
-    std::memcpy(mesh.normals,   cpu.normals.data(),   cpu.normals.size()   * sizeof(float));
-    std::memcpy(mesh.texcoords, cpu.texcoords.data(), cpu.texcoords.size() * sizeof(float));
-    std::memcpy(mesh.indices,   cpu.indices.data(),   cpu.indices.size()   * sizeof(unsigned short));
-    UploadMesh(&mesh, false);
+    if (cpu.parts.empty()) return false;
+    // One raylib mesh per part, all sharing one material (what
+    // LoadModelFromMesh does for a single mesh).
+    const int n = static_cast<int>(cpu.parts.size());
+    Model model{};
+    model.transform     = MatrixIdentity();
+    model.meshCount     = n;
+    model.meshes        = static_cast<Mesh*>(MemAlloc(static_cast<unsigned>(n * sizeof(Mesh))));
+    model.materialCount = 1;
+    model.materials     = static_cast<Material*>(MemAlloc(sizeof(Material)));
+    model.materials[0]  = LoadMaterialDefault();
+    model.meshMaterial  = static_cast<int*>(MemAlloc(static_cast<unsigned>(n * sizeof(int))));
+    for (int i = 0; i < n; ++i) {
+        const CpuMesh::Part& p = cpu.parts[static_cast<size_t>(i)];
+        Mesh mesh{};
+        mesh.vertexCount   = static_cast<int>(p.vertices.size() / 3);
+        mesh.triangleCount = static_cast<int>(p.indices.size()  / 3);
+        mesh.vertices  = (float*)MemAlloc((unsigned)(p.vertices.size()  * sizeof(float)));
+        mesh.normals   = (float*)MemAlloc((unsigned)(p.normals.size()   * sizeof(float)));
+        mesh.texcoords = (float*)MemAlloc((unsigned)(p.texcoords.size() * sizeof(float)));
+        mesh.indices   = (unsigned short*)MemAlloc((unsigned)(p.indices.size() * sizeof(unsigned short)));
+        std::memcpy(mesh.vertices,  p.vertices.data(),  p.vertices.size()  * sizeof(float));
+        std::memcpy(mesh.normals,   p.normals.data(),   p.normals.size()   * sizeof(float));
+        std::memcpy(mesh.texcoords, p.texcoords.data(), p.texcoords.size() * sizeof(float));
+        std::memcpy(mesh.indices,   p.indices.data(),   p.indices.size()   * sizeof(unsigned short));
+        UploadMesh(&mesh, false);
+        model.meshes[i] = mesh;
+        model.meshMaterial[i] = 0;
+    }
 
-    out.model    = LoadModelFromMesh(mesh);
+    out.model    = model;
     out.tint     = tint;
     out.scale    = scale;
     out.base_rot = base_rot;
@@ -341,8 +391,10 @@ bool AssetManager::convert_assimp(const std::filesystem::path& path,
     CpuMesh cpu;
     if (!parse_file(path, cpu)) return false;
     if (!upload_cpu(cpu, import_scale, tint, base_rot, out)) return false;
-    TraceLog(LOG_INFO, "AssetManager: loaded '%s' (%d verts)",
-             path.filename().string().c_str(), out.model.meshCount ? out.model.meshes[0].vertexCount : 0);
+    int verts = 0;
+    for (int i = 0; i < out.model.meshCount; ++i) verts += out.model.meshes[i].vertexCount;
+    TraceLog(LOG_INFO, "AssetManager: loaded '%s' (%d verts, %d meshes)",
+             path.filename().string().c_str(), verts, out.model.meshCount);
     return true;
 }
 

@@ -19,6 +19,10 @@ struct ModelSpec {
 class ConfigManager {
 public:
     static void load_config(UIState& state, const std::string& path = "afteraction_config.yaml");
+    // Pull every numeric setting back into its valid range (non-finite values
+    // reset to the default). Run after loading and every frame, since a slider
+    // can be Ctrl+clicked to type any value.
+    static void clamp_settings(UIState& state);
     static void save_config(const UIState& state, const std::string& path = "afteraction_config.yaml");
     // The persisted settings as YAML text (also used to detect changes for autosave).
     static std::string to_yaml(const UIState& state);

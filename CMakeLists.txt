@@ -211,7 +211,8 @@ else()
         -Wall
         -Wextra
         -Wno-unused-parameter
-        -ffast-math
+        # No -ffast-math: it lets the compiler assume NaN/Inf never occur, which
+        # silently breaks isnan/isfinite checks (terrain raycast, model builder).
         # -march=native is commented out for portability across machines;
         # uncomment locally for maximum performance on your build machine.
         # -march=native

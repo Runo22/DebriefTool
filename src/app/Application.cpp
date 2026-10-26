@@ -252,6 +252,7 @@ void Application::init_terrain() {
 }
 
 void Application::set_origin(double lat, double lon) {
+    ++origin_epoch_;
     geo_.set(lat, lon);
     terrain_.set_frame(geo_);
     airfields_.rebuild(geo_, terrain_);
@@ -284,15 +285,19 @@ void Application::init_ui_callbacks() {
         persist::SceneOrigin origin{};
         origin.lat_deg = geo_.lat0();
         origin.lon_deg = geo_.lon0();
-        persist::Recorder::export_slice(store_, secs, path, "dashcam", origin);
-        TraceLog(LOG_INFO, "Saved dashcam to %s", path.c_str());
+        if (persist::Recorder::export_slice(store_, secs, path, "dashcam", origin))
+            TraceLog(LOG_INFO, "Saved dashcam to %s", path.c_str());
+        else
+            TraceLog(LOG_WARNING, "Could not save dashcam to %s (no data or write error)", path.c_str());
     };
     cbs.on_load_file   = [this](std::string path) { load_session(path); };
     cbs.on_load_csv    = [this](std::string path) { import_csv(path); };
     cbs.on_browse_file = [this] { browse_and_load(); };
     cbs.on_load_model = [this](uint16_t type_id, std::string path) {
-        if (assets_.load(path, path, 1.0f))
+        if (assets_.load(path, path, 1.0f)) {
             assets_.map_type(type_id, path);
+            repoint_entities_of_type(type_id);   // existing tracks switch too
+        }
     };
     cbs.on_clear_entities = [this] { clear_requested_ = true; };
     cbs.on_apply_network  = [this](std::string addr, uint16_t port) {
@@ -312,8 +317,14 @@ void Application::init_ui_callbacks() {
     };
     cbs.on_go_home = [this] {
         const auto& st = ui_.state();
-        if (GeoFrame::distance_m(geo_.lat0(), geo_.lon0(), st.origin_lat, st.origin_lon) > 250000.0)
-            set_origin(st.origin_lat, st.origin_lon);
+        // Moving the origin would leave existing tracks (and a running recording,
+        // whose file stores one origin) in the old frame — only do it when empty.
+        if (GeoFrame::distance_m(geo_.lat0(), geo_.lon0(), st.origin_lat, st.origin_lon) > 250000.0) {
+            if (entity_map_.empty() && !recorder_.is_recording())
+                set_origin(st.origin_lat, st.origin_lon);
+            else
+                TraceLog(LOG_WARNING, "Home is far from the scene: keeping the origin while tracks/recording exist");
+        }
         const Vector3 p = geo_.to_world(st.origin_lat, st.origin_lon, 0.0);
         ui_.state().camera_mode = 0;
         look_at(p.x, p.z);
@@ -383,6 +394,7 @@ void Application::clear_all_entities() {
     store_.clear();
     live_states_.clear();
     live_newest_ns_ = 0;
+    source_offset_ns_.clear();
     ui_.state().selected_entity = {};
     origin_locked_ = false;   // the next live track may re-centre the scene
     camera_ctl_.reset_auto_frame();   // re-frame the next single track that arrives
@@ -453,6 +465,7 @@ void Application::import_csv(const std::string& path) {
         frame.push_back(s);
     }
     flush();
+    store_.flush_pending();
 
     auto [ts, te] = store_.time_range_ns();
     playback_.seek(ts);
@@ -554,6 +567,7 @@ void Application::tick(float dt) {
         repoint_entities_of_type(type);
 
     handle_input(dt);
+    ConfigManager::clamp_settings(ui_.state());   // sliders can be Ctrl+clicked past their range
     if (cfg_.demo_mode) process_demo(dt);
     else                process_inbound_queue();
     update_ecs(dt);
@@ -574,9 +588,11 @@ void Application::ensure_origin_and_convert(net::EntityState& state) {
         origin_locked_ = true;
         // Keep the current origin (and its already-built terrain) unless the data
         // is far away from it — beyond that the flat projection would distort.
+        // Not while recording: the file stores a single origin.
         constexpr double kRecentreM = 250000.0;
         if (!geo_.valid() ||
-            GeoFrame::distance_m(geo_.lat0(), geo_.lon0(), state.lat_deg, state.lon_deg) > kRecentreM)
+            (!recorder_.is_recording() &&
+             GeoFrame::distance_m(geo_.lat0(), geo_.lon0(), state.lat_deg, state.lon_deg) > kRecentreM))
             set_origin(state.lat_deg, state.lon_deg);
     }
     const Vector3 p = geo_.to_world(state.lat_deg, state.lon_deg, state.alt_m);
@@ -613,6 +629,7 @@ void Application::process_inbound_queue() {
         // live_states_, so pre-CLEAR frames in this batch are correctly dropped.)
         if (frame->clear_all) { clear_all_entities(); continue; }
         for (auto& es : frame->entities) {
+            es.timestamp_ns = to_local_time(es.source_id, es.timestamp_ns);
             ensure_origin_and_convert(es);
             apply_state_to_ecs(es);
             live_states_.push_back(es);
@@ -856,6 +873,16 @@ void Application::sync_ecs_to_playback(uint64_t target_ns) {
 }
 
 // ── ECS tick ──────────────────────────────────────────────────────────────────
+uint64_t Application::to_local_time(uint32_t source_id, uint64_t ts_ns) {
+    const int64_t now = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    auto it = source_offset_ns_.find(source_id);
+    // New sender, or its clock is more than 5 s off ours (restart / jump): re-anchor.
+    if (it == source_offset_ns_.end() || std::llabs(int64_t(ts_ns) + it->second - now) > 5'000'000'000LL)
+        it = source_offset_ns_.insert_or_assign(source_id, now - int64_t(ts_ns)).first;
+    return static_cast<uint64_t>(int64_t(ts_ns) + it->second);
+}
+
 void Application::note_live_sample(uint64_t ts_ns) {
     if (ts_ns + 5'000'000'000ULL < live_newest_ns_) live_newest_ns_ = 0;   // sender clock restarted
     if (ts_ns <= live_newest_ns_) return;
@@ -887,8 +914,15 @@ void Application::update_ecs(float dt) {
         sync_ecs_to_playback(playback_.current_time_ns());
         world_.set<ecs::InterpolationCtx>({playback_.current_time_ns(), false});
     } else {
+        // Back to live after viewing a file: tracks that only exist in the
+        // file have no live history — hide them instead of drawing them at
+        // the origin.
+        if (!was_live_)
+            world_.query<ecs::EntityMeta, const ecs::HistoryComp>()
+                .each([](ecs::EntityMeta& m, const ecs::HistoryComp& h) { if (h.hist.count == 0) m.active = false; });
         world_.set<ecs::InterpolationCtx>({advance_live_clock(dt), true});
     }
+    was_live_ = playback_.is_live();
     world_.progress(dt);
 
     camera_ctl_.auto_frame(ui_.state(), world_);
@@ -1465,18 +1499,22 @@ void Application::update_minimap() {
     if (minimap_job_.valid() &&
         minimap_job_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
         std::vector<unsigned char> px = minimap_job_.get();
-        if (!minimap_tex_.id) {
+        if (minimap_pending_key_.origin != origin_epoch_) {
+            minimap_key_ = {};   // rendered for an old origin — discard, render again
+        } else if (!minimap_tex_.id) {
             Image img{ px.data(), kMinimapPx, kMinimapPx, 1, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 };
             minimap_tex_ = LoadTextureFromImage(img);
             SetTextureFilter(minimap_tex_, TEXTURE_FILTER_BILINEAR);
         } else {
             UpdateTexture(minimap_tex_, px.data());
         }
-        minimap_key_ = minimap_pending_key_;
-        sc.minimap = minimap_tex_;
-        sc.map_cx = minimap_key_.cx;
-        sc.map_cz = minimap_key_.cz;
-        sc.map_range = minimap_key_.range;
+        if (minimap_pending_key_.origin == origin_epoch_) {
+            minimap_key_ = minimap_pending_key_;
+            sc.minimap = minimap_tex_;
+            sc.map_cx = minimap_key_.cx;
+            sc.map_cz = minimap_key_.cz;
+            sc.map_range = minimap_key_.range;
+        }
     }
     if (!terrain_.has_data() || minimap_job_.valid()) return;
 
@@ -1500,9 +1538,9 @@ void Application::update_minimap() {
     need = std::clamp(need, 4000.0f, 1600000.0f);
     const float range = std::pow(2.0f, std::ceil(std::log2(need)));
     const float snap = range / 8.0f;
-    MapKey key{ std::round(cx / snap) * snap, std::round(cz / snap) * snap, range };
+    MapKey key{ std::round(cx / snap) * snap, std::round(cz / snap) * snap, range, origin_epoch_ };
     if (key.cx == minimap_key_.cx && key.cz == minimap_key_.cz && key.range == minimap_key_.range &&
-        minimap_tex_.id)
+        key.origin == minimap_key_.origin && minimap_tex_.id)
         return;
     minimap_pending_key_ = key;
     const GeoFrame frame = geo_;

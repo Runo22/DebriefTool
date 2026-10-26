@@ -1,6 +1,7 @@
 #pragma once
 #include "../network/Packet.hpp"
 #include <filesystem>
+#include <cctype>
 #include <functional>
 #include <optional>
 #include <string>
@@ -45,8 +46,9 @@ enum class CsvField {
 class CsvImporter {
 public:
     // Column header name → semantic field.
+    // Column names match case-insensitively ("Time" = "time").
     void map(const std::string& column_name, CsvField field) {
-        mappings_[column_name] = field;
+        mappings_[lower(column_name)] = field;
     }
 
     // Delimiter (comma by default; supports tab-separated, semicolon, etc.).
@@ -74,6 +76,10 @@ public:
 
 private:
     std::unordered_map<std::string, CsvField> mappings_;
+    static std::string lower(std::string s) {
+        for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return s;
+    }
 
     std::vector<std::string> split_line(const std::string& line) const;
     std::optional<net::EntityState> parse_row(

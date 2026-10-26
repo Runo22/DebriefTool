@@ -295,7 +295,8 @@ float AfterActionUI::timeline_height(const TelemetryStore& store) const {
     auto [ts, te] = store.time_range_ns();
     if (ts == 0 && te == 0) return 0.0f;
     if (!state_.selected_entity.is_valid()) return S(62.0f);          // scrubber only
-    return std::clamp(S(state_.timeline_height), S(140.0f), static_cast<float>(GetScreenHeight()) * 0.6f);
+    // max/min, not clamp: on a short window at a large UI scale lo can exceed hi.
+    return std::max(S(140.0f), std::min(S(state_.timeline_height), static_cast<float>(GetScreenHeight()) * 0.6f));
 }
 
 void AfterActionUI::draw(PlaybackController& pb,
@@ -494,8 +495,8 @@ void AfterActionUI::draw_timeline(PlaybackController& pb, const TelemetryStore& 
         const bool grip = ImGui::IsItemHovered() || ImGui::IsItemActive();
         if (grip) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
         if (ImGui::IsItemActive())
-            state_.timeline_height = std::clamp(state_.timeline_height - ImGui::GetIO().MouseDelta.y / g_scale,
-                                                140.0f, h * 0.6f / g_scale);
+            state_.timeline_height = std::max(140.0f, std::min(state_.timeline_height - ImGui::GetIO().MouseDelta.y / g_scale,
+                                                               h * 0.6f / g_scale));
         ImGui::GetWindowDrawList()->AddLine({ wp.x, wp.y + 1.0f }, { wp.x + w, wp.y + 1.0f },
             grip ? ImGui::GetColorU32(kAccent) : IM_COL32(40, 70, 100, 130), 2.0f);
         ImGui::SetCursorScreenPos(saved);
@@ -675,7 +676,7 @@ void AfterActionUI::draw_tracks_tab(const flecs::world& world) {
 
         world.query<const EntityMeta, const Position, const Velocity>()
             .each([&](flecs::entity e, const EntityMeta& meta, const Position& pos, const Velocity& vel) {
-                ImGui::PushID(static_cast<int>((meta.source_id << 16) ^ meta.entity_id));
+                ImGui::PushID(reinterpret_cast<void*>(static_cast<uintptr_t>(e.id())));   // unique per track
                 ImGui::TableNextRow();
                 const bool selected = state_.selected_entity == e;
                 ImVec4 col = entity_type_color(meta.type);
@@ -684,9 +685,18 @@ void AfterActionUI::draw_tracks_tab(const flecs::world& world) {
                 ImGui::TableNextColumn();
                 ImGui::TextColored(col, "%s", entity_type_icon(meta.type));
                 ImGui::TableNextColumn();
-                char label[48];
-                if (meta.callsign[0]) snprintf(label, sizeof(label), "%s", meta.callsign);
-                else                  snprintf(label, sizeof(label), "#%u", meta.entity_id);
+                // "##" in a callsign would end ImGui's visible label early: show
+                // it as "# #"; the fixed "###row" suffix is the row's ID.
+                char shown[2 * net::kCallsignLen];
+                size_t k = 0;
+                for (const char* p = meta.callsign; *p && k + 2 < sizeof(shown); ++p) {
+                    shown[k++] = *p;
+                    if (p[0] == '#' && p[1] == '#') shown[k++] = ' ';
+                }
+                shown[k] = '\0';
+                char label[2 * net::kCallsignLen + 16];
+                if (meta.callsign[0]) snprintf(label, sizeof(label), "%s###row", shown);
+                else                  snprintf(label, sizeof(label), "#%u###row", meta.entity_id);
                 if (!meta.active) ImGui::PushStyleColor(ImGuiCol_Text, col);
                 if (ImGui::Selectable(label, selected, ImGuiSelectableFlags_SpanAllColumns))
                     state_.selected_entity = selected ? flecs::entity{} : e;

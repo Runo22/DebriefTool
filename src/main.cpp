@@ -140,10 +140,11 @@ int main(int argc, char** argv) {
             puts("  --open FILE       Open a .aar recording or .csv log at startup");
             puts("\nKeyboard shortcuts:");
             puts("  Space      Play / Pause");
-            puts("  F          Follow selected entity");
+            puts("  F          Focus on the selected track    G  Chase it");
             puts("  R          Toggle ribbon trails");
             puts("  1/2/3/4    Playback speed: 0.25x / 1x / 4x / -1x");
-            puts("  Esc        Quit");
+            puts("  H          Go home");
+            puts("  Esc        Close settings / deselect      Ctrl+Q  Quit");
             return 0;
         }
     }

@@ -24,7 +24,8 @@
 //
 //  See docs/PROTOCOL.md for the full field reference, units and examples.
 //
-//  Entity types: 0=unknown, 1=jet, 2=missile, 3=aaa, 4=ground, 5=helo, 6=ship
+//  Entity types: 0=unknown, 1=jet, 2=missile, 3=aaa, 4=ground, 5=helo, 6=ship,
+//                7=uav, 8=ucav, 9=sam, 10=prop, 11=transport
 //
 //  Angles: aviation convention (binary float64, values in degrees)
 //    psi   = heading  (0 = North, 90 = East, clockwise, 0..360 deg)
@@ -54,6 +55,12 @@ inline void clean_callsign(char* cs, int n) noexcept {
         bool ok = len > 0 && i + len <= n;
         for (int k = 1; ok && k < len; ++k)
             ok = (static_cast<unsigned char>(cs[i + k]) & 0xC0) == 0x80;
+        if (ok && len >= 3) {   // reject overlong forms, surrogates and > U+10FFFF
+            const auto c1 = static_cast<unsigned char>(cs[i + 1]);
+            if ((c == 0xE0 && c1 < 0xA0) || (c == 0xED && c1 > 0x9F) ||
+                (c == 0xF0 && c1 < 0x90) || (c == 0xF4 && c1 > 0x8F))
+                ok = false;
+        }
         if (!ok) break;
         i += len;
     }

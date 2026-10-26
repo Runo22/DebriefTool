@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <optional>
 #include <vector>
 
 namespace afteraction {
@@ -108,9 +109,10 @@ public:
 
     // Box between y0..y1 and z0..z1; half widths may differ top/bottom and front
     // (z0) vs back, and the top front edge can be set back (sloped glacis).
+    // (std::optional rather than a NaN marker: NaN tests can be optimised away.)
     void block(float x, float y0, float y1, float z0, float z1, float hw_bottom, float hw_top, Color c,
-               float top_z0 = NAN, float top_z1 = NAN) {
-        const float tz0 = std::isnan(top_z0) ? z0 : top_z0, tz1 = std::isnan(top_z1) ? z1 : top_z1;
+               std::optional<float> top_z0 = {}, std::optional<float> top_z1 = {}) {
+        const float tz0 = top_z0.value_or(z0), tz1 = top_z1.value_or(z1);
         const Vector3 p[8] = {
             { x - hw_bottom, y0, z0 }, { x + hw_bottom, y0, z0 }, { x + hw_bottom, y0, z1 }, { x - hw_bottom, y0, z1 },
             { x - hw_top,    y1, tz0 }, { x + hw_top,   y1, tz0 }, { x + hw_top,   y1, tz1 }, { x - hw_top,   y1, tz1 },
