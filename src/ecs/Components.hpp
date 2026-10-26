@@ -39,6 +39,10 @@ struct Velocity    { Vector3 v{ 0, 0, 0 }; };
 //   independently of the render system.
 struct HistoryComp { EntityStateHistory hist; };
 
+// Latest reported geographic position, exactly as received (live only). The
+// drawn position trails it slightly (interpolation delay).
+struct Reported { double lat = 0.0, lon = 0.0; bool live = false; };
+
 // ── Visual ────────────────────────────────────────────────────────────────────
 struct RenderModel {
     const ModelEntry* entry = nullptr;   // non-owning — AssetManager owns it (model, tint, scale, rotors)

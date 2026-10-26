@@ -74,7 +74,10 @@ struct EntityStateHistory {
     // Returns {a, b} where a.timestamp ≤ ts_ns < b.timestamp for interpolation.
     // If ts_ns is before all history, returns {frames[0], frames[0]}.
     // If ts_ns is after all history, returns {latest, latest}.
-    struct Bracket { const Keyframe* lo; const Keyframe* hi; };
+    // prev / next are the samples before lo and after hi (nullptr if none),
+    // used for the interpolation tangents.
+    struct Bracket { const Keyframe* lo; const Keyframe* hi;
+                     const Keyframe* prev = nullptr; const Keyframe* next = nullptr; };
     [[nodiscard]] Bracket bracket(uint64_t ts_ns) const noexcept {
         if (count == 0) return {&frames[0], &frames[0]};
         uint32_t start = (count < kCapacity) ? 0 : (write_idx % kCapacity);
@@ -82,8 +85,12 @@ struct EntityStateHistory {
         int floor_idx  = find_floor(ts_ns);
         if (floor_idx < 0) return {&frames[start], &frames[start]};
         if (static_cast<uint32_t>(floor_idx) == last) return {&frames[last], &frames[last]};
-        uint32_t next = (static_cast<uint32_t>(floor_idx) + 1) % kCapacity;
-        return {&frames[static_cast<uint32_t>(floor_idx)], &frames[next]};
+        const uint32_t lo = static_cast<uint32_t>(floor_idx);
+        const uint32_t logical = (lo + kCapacity - start) % kCapacity;   // 0 = oldest
+        Bracket b{ &frames[lo], &frames[(lo + 1) % kCapacity] };
+        if (logical > 0)          b.prev = &frames[(lo + kCapacity - 1) % kCapacity];
+        if (logical + 2 < count)  b.next = &frames[(lo + 2) % kCapacity];
+        return b;
     }
 };
 

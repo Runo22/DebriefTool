@@ -841,8 +841,12 @@ void AfterActionUI::draw_inspector(const flecs::world& /*world*/) {
     if (ImGui::SmallButton(ICON_FA_XMARK "##close")) { state_.selected_entity = {}; return; }
     if (!meta.active) ImGui::TextColored(kBad, ICON_FA_SKULL "  DESTROYED / NOT ACTIVE");
 
+    // Live: the last reported lat/lon exactly as sent. Playback: the position
+    // at the playback time.
     double lat = 0.0, lon = 0.0;
-    if (cbs_.to_geo) cbs_.to_geo(pos.v.x, pos.v.z, &lat, &lon);
+    const Reported* rep = e.try_get<Reported>();
+    if (rep && rep->live)  { lat = rep->lat; lon = rep->lon; }
+    else if (cbs_.to_geo)  cbs_.to_geo(pos.v.x, pos.v.z, &lat, &lon);
     const float gnd = cbs_.ground_height ? cbs_.ground_height(pos.v.x, pos.v.z) : 0.0f;
     // Units on the ground differ from our terrain by sub-metre amounts; show 0, not "-0" in red.
     float agl = pos.v.y - gnd;

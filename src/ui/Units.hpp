@@ -42,18 +42,21 @@ struct UnitPrefs {
     void format_coord(double v, bool is_lat, char* buf, size_t n) const {
         const char hemi = is_lat ? (v >= 0 ? 'N' : 'S') : (v >= 0 ? 'E' : 'W');
         const double a = std::fabs(v);
-        const int d = static_cast<int>(a);
-        const double m = (a - d) * 60.0;
+        // Round once at the displayed resolution, then split, so 59.96" shows
+        // as the next minute (00.0") rather than as 60.0".
         switch (coord) {
             case CoordFmt::Decimal:
                 std::snprintf(buf, n, "%.5f\xc2\xb0%c", a, hemi);
                 break;
-            case CoordFmt::DDM:
-                std::snprintf(buf, n, "%d\xc2\xb0%06.3f'%c", d, m, hemi);
+            case CoordFmt::DDM: {
+                const long long t = std::llround(a * 60000.0);          // thousandths of a minute
+                std::snprintf(buf, n, "%lld\xc2\xb0%02lld.%03lld'%c", t / 60000, (t % 60000) / 1000, t % 1000, hemi);
                 break;
+            }
             default: {
-                const int mi = static_cast<int>(m);
-                std::snprintf(buf, n, "%d\xc2\xb0%02d'%04.1f\"%c", d, mi, (m - mi) * 60.0, hemi);
+                const long long t = std::llround(a * 36000.0);          // tenths of a second
+                std::snprintf(buf, n, "%lld\xc2\xb0%02lld'%02lld.%lld\"%c",
+                              t / 36000, (t % 36000) / 600, (t % 600) / 10, t % 10, hemi);
             }
         }
     }

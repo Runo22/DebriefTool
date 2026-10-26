@@ -1,5 +1,6 @@
 #include "Application.hpp"
 #include "../ecs/Systems.hpp"
+#include "../ecs/Interp.hpp"
 #include <rlImGui.h>
 #include <imgui.h>
 #include <implot.h>
@@ -174,6 +175,7 @@ void Application::init_ecs() {
     world_.component<ecs::Velocity>();
     world_.component<ecs::HistoryComp>();
     world_.component<ecs::RenderModel>();
+    world_.component<ecs::Reported>();
     world_.component<ecs::Trail>();
     ecs::register_systems(world_);
 }
@@ -747,6 +749,7 @@ void Application::apply_state_to_ecs(net::EntityState& state) {
     kf.health          = state.health;
 
     e.get_mut<ecs::HistoryComp>().hist.push(kf);
+    e.set<ecs::Reported>({ state.lat_deg, state.lon_deg, true });
 }
 
 void Application::sync_ecs_to_playback(uint64_t target_ns) {
@@ -787,6 +790,7 @@ void Application::sync_ecs_to_playback(uint64_t target_ns) {
             continue;
         }
         meta.active = true;
+        if (ecs::Reported* rep = e.try_get_mut<ecs::Reported>()) rep->live = false;   // show the playback position
 
         // Perform interpolation
         Vector3 pos{};
@@ -808,33 +812,27 @@ void Application::sync_ecs_to_playback(uint64_t target_ns) {
             const auto& klo = *(it_hi - 1);
 
             float alpha = 0.0f;
-            float dt_sec = 0.0f;
             if (khi.timestamp_ns > klo.timestamp_ns) {
-                dt_sec = static_cast<float>(khi.timestamp_ns - klo.timestamp_ns) * 1e-9f;
                 alpha  = static_cast<float>(target_ns - klo.timestamp_ns) /
                          static_cast<float>(khi.timestamp_ns - klo.timestamp_ns);
                 alpha  = std::clamp(alpha, 0.0f, 1.0f);
             }
 
-            Vector3 p0{klo.position[0], klo.position[1], klo.position[2]};
             Vector3 v0{klo.velocity[0],  klo.velocity[1],  klo.velocity[2]};
-            Vector3 p1{khi.position[0], khi.position[1], khi.position[2]};
             Vector3 v1{khi.velocity[0],  khi.velocity[1],  khi.velocity[2]};
 
             Quaternion q0{klo.orientation[0], klo.orientation[1], klo.orientation[2], klo.orientation[3]};
             Quaternion q1{khi.orientation[0], khi.orientation[1], khi.orientation[2], khi.orientation[3]};
 
-            // Hermite position interpolation
-            const float t2 = alpha * alpha, t3 = t2 * alpha;
-            const float h00 =  2*t3 - 3*t2 + 1;
-            const float h10 =    t3 - 2*t2 + alpha;
-            const float h01 = -2*t3 + 3*t2;
-            const float h11 =    t3 -   t2;
-            pos = {
-                h00*p0.x + h10*(v0.x*dt_sec) + h01*p1.x + h11*(v1.x*dt_sec),
-                h00*p0.y + h10*(v0.y*dt_sec) + h01*p1.y + h11*(v1.y*dt_sec),
-                h00*p0.z + h10*(v0.z*dt_sec) + h01*p1.z + h11*(v1.z*dt_sec),
+            // Cubic through the recorded positions (tangents from neighbouring samples).
+            auto sample = [](const net::EntityState& k) {
+                return ecs::TrackSample{ { k.position[0], k.position[1], k.position[2] }, k.timestamp_ns };
             };
+            const ecs::TrackSample a = sample(klo), b = sample(khi);
+            const bool has_prev = (it_hi - 1) != hist->begin(), has_next = (it_hi + 1) != hist->end();
+            const ecs::TrackSample pv = has_prev ? sample(*(it_hi - 2)) : a;
+            const ecs::TrackSample nx = has_next ? sample(*(it_hi + 1)) : b;
+            pos = ecs::track_position(has_prev ? &pv : nullptr, a, b, has_next ? &nx : nullptr, alpha);
 
             rot = QuaternionSlerp(q0, q1, alpha);
             vel = Vector3Lerp(v0, v1, alpha);
