@@ -141,6 +141,8 @@ Built-in models are at real size and loosely modelled on Turkish platforms
 | 5 | Helicopter | T129 ATAK-style (spinning rotors) |
 | 6 | Ship | MİLGEM (Ada-class) corvette |
 | 7 | UAV | ANKA-style MALE UAV (spinning propeller) |
+| 8 | UCAV | ANKA-3-style flying wing |
+| 9 | SAM launcher | HİSAR-O-style 6×6 launcher with raised canisters |
 
 ### C++ sender example
 

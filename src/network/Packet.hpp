@@ -38,6 +38,29 @@ namespace afteraction::net {
 // format, the in-memory state and the recording format.
 inline constexpr int kCallsignLen = 32;
 
+// Keep a callsign only up to its first byte that isn't readable text: a
+// control character or a broken UTF-8 sequence (e.g. uninitialised memory a
+// sender copied after the name), then drop trailing spaces. Valid UTF-8 such
+// as Turkish letters is kept. `cs` must be null-terminated within `n` bytes.
+inline void clean_callsign(char* cs, int n) noexcept {
+    int i = 0;
+    while (i < n && cs[i] != '\0') {
+        const auto c = static_cast<unsigned char>(cs[i]);
+        int len = 0;
+        if (c >= 0x20 && c < 0x7F)    len = 1;
+        else if (c >= 0xC2 && c <= 0xDF) len = 2;
+        else if (c >= 0xE0 && c <= 0xEF) len = 3;
+        else if (c >= 0xF0 && c <= 0xF4) len = 4;
+        bool ok = len > 0 && i + len <= n;
+        for (int k = 1; ok && k < len; ++k)
+            ok = (static_cast<unsigned char>(cs[i + k]) & 0xC0) == 0x80;
+        if (!ok) break;
+        i += len;
+    }
+    while (i > 0 && cs[i - 1] == ' ') --i;
+    if (i < n) cs[i] = '\0';
+}
+
 // -- Wire-format structs (no padding, little-endian) ------------------------
 #pragma pack(push, 1)
 
@@ -79,6 +102,8 @@ enum EntityTypeId : uint16_t {
     TYPE_HELO    = 5,
     TYPE_SHIP    = 6,
     TYPE_UAV     = 7,
+    TYPE_UCAV    = 8,   // jet-powered unmanned combat aircraft (ANKA-3 style)
+    TYPE_SAM     = 9,   // surface-to-air missile launcher
 };
 
 inline constexpr uint8_t kMagic[4]    = {'D','B','F','1'};

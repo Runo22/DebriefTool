@@ -11,6 +11,8 @@ namespace afteraction {
 //    TYPE_JET     KAAN-style 5th-gen fighter (twin canted tails, chined nose)
 //    TYPE_HELO    T129 ATAK-style attack helicopter (spinning main/tail rotor)
 //    TYPE_UAV     ANKA-style MALE UAV (spinning pusher propeller)
+//    TYPE_UCAV    ANKA-3-style flying-wing UCAV
+//    TYPE_SAM     HİSAR-O-style SAM launcher (6×6 truck, raised canisters)
 //    TYPE_MISSILE air-to-air missile
 //    TYPE_AAA     KORKUT-style tracked twin-gun air-defence vehicle
 //    TYPE_GROUND  6×6 armoured vehicle

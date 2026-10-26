@@ -39,6 +39,8 @@ const char* entity_type_icon(uint16_t t) {
     case net::TYPE_HELO:    return ICON_FA_HELICOPTER;
     case net::TYPE_SHIP:    return ICON_FA_SHIP;
     case net::TYPE_UAV:     return ICON_FA_PLANE_UP;
+    case net::TYPE_UCAV:    return ICON_FA_JET_FIGHTER_UP;
+    case net::TYPE_SAM:     return ICON_FA_SHIELD_HALVED;
     default:                return ICON_FA_CIRCLE_QUESTION;
     }
 }
@@ -52,6 +54,8 @@ const char* entity_type_name(uint16_t t) {
     case net::TYPE_HELO:    return "Helo";
     case net::TYPE_SHIP:    return "Ship";
     case net::TYPE_UAV:     return "UAV";
+    case net::TYPE_UCAV:    return "UCAV";
+    case net::TYPE_SAM:     return "SAM";
     default:                return "Unknown";
     }
 }
@@ -66,6 +70,8 @@ ImVec4 entity_type_color(uint16_t t) {
     case net::TYPE_HELO:    return { 0.42f, 0.90f, 0.50f, 1.0f };
     case net::TYPE_SHIP:    return { 0.70f, 0.70f, 0.92f, 1.0f };
     case net::TYPE_UAV:     return { 0.78f, 0.47f, 1.00f, 1.0f };
+    case net::TYPE_UCAV:    return { 0.59f, 0.43f, 1.00f, 1.0f };
+    case net::TYPE_SAM:     return { 0.94f, 0.78f, 0.24f, 1.0f };
     default:                return { 0.20f, 0.80f, 1.00f, 1.0f };
     }
 }
@@ -822,7 +828,9 @@ void AfterActionUI::draw_inspector(const flecs::world& /*world*/) {
     double lat = 0.0, lon = 0.0;
     if (cbs_.to_geo) cbs_.to_geo(pos.v.x, pos.v.z, &lat, &lon);
     const float gnd = cbs_.ground_height ? cbs_.ground_height(pos.v.x, pos.v.z) : 0.0f;
-    const float agl = pos.v.y - gnd;
+    // Units on the ground differ from our terrain by sub-metre amounts; show 0, not "-0" in red.
+    float agl = pos.v.y - gnd;
+    if (std::fabs(agl) < 0.5f) agl = 0.0f;
     const float spd = std::sqrt(vel.v.x * vel.v.x + vel.v.y * vel.v.y + vel.v.z * vel.v.z);
     float hdg, pitch, roll;
     euler_from_quat(q, &hdg, &pitch, &roll);
@@ -1255,7 +1263,7 @@ void AfterActionUI::settings_models() {
          "Preview scale and rotation with the 'hangar' tool.");
     ImGui::Spacing();
 
-    const char* kTypeNames[] = { "Unknown", "Jet", "Missile", "AAA", "Ground", "Helo", "Ship", "UAV" };
+    const char* kTypeNames[] = { "Unknown", "Jet", "Missile", "AAA", "Ground", "Helo", "Ship", "UAV", "UCAV", "SAM" };
     int remove_idx = -1;
     for (int i = 0; i < (int)state_.model_bindings.size(); ++i) {
         auto& b = state_.model_bindings[i];

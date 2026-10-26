@@ -116,6 +116,19 @@ void DemoMode::reset() {
         f.max_climb = 5.0;
         flyers_.push_back(f);
     }
+    // ANKA3 — ANKA-3-style UCAV on a wide, fast orbit at 7 000 m south of the field.
+    {
+        Flyer f{9, net::TYPE_UCAV, "ANKA3"};
+        const double R = 11000, cx = 6000, cz = 9000;
+        for (int i = 0; i < 8; ++i) {
+            const double a = -i * kPi / 4;
+            f.route.push_back({cx + R * std::cos(a), cz + R * std::sin(a), 7000, 170, false});
+        }
+        f.x = cx + R; f.z = cz + 3000; f.alt = 7000; f.speed = 170; f.hdg = 0;
+        f.max_turn = 3.0;
+        f.max_climb = 15.0;
+        flyers_.push_back(f);
+    }
     // CONVOY1 — ground vehicle loop on the plain south-east of the base.
     {
         Flyer f{7, net::TYPE_GROUND, "CONVOY1"};
@@ -243,6 +256,14 @@ std::vector<net::EntityState> DemoMode::tick(float dt_sec) {
         site.x = 3500; site.z = -2500;
         site.alt = ground(site.x, site.z);
         site.hdg = 250.0;
+        out.push_back(to_state(site));
+    }
+    // HISAR1 — static SAM launcher north-east of the field, launcher raised.
+    {
+        Flyer site{10, net::TYPE_SAM, "HISAR1"};
+        site.x = 5200; site.z = -6500;
+        site.alt = ground(site.x, site.z);
+        site.hdg = 20.0;
         out.push_back(to_state(site));
     }
     return out;

@@ -654,9 +654,17 @@ flecs::entity Application::get_or_create_entity(const net::EntityState& state) {
     if (auto it = entity_map_.find(key); it != entity_map_.end())
         return it->second;
 
-    char ename[64];
-    snprintf(ename, sizeof(ename), "%s%u",
-             state.callsign[0] ? state.callsign : "ent", state.entity_id);
+    // Recordings and CSV files can carry callsigns that skipped the network
+    // parser, so clean them here too.
+    char callsign[net::kCallsignLen];
+    std::memcpy(callsign, state.callsign, net::kCallsignLen);
+    callsign[net::kCallsignLen - 1] = '\0';
+    net::clean_callsign(callsign, net::kCallsignLen);
+
+    // Unique per source as well (two senders may use the same id and callsign).
+    char ename[80];
+    snprintf(ename, sizeof(ename), "%s_%u_%u",
+             callsign[0] ? callsign : "ent", state.source_id, state.entity_id);
 
     const auto* entry = assets_.get_for_type(state.entity_type);
 
@@ -673,6 +681,8 @@ flecs::entity Application::get_or_create_entity(const net::EntityState& state) {
         case net::TYPE_GROUND:  trail_init.color = {220, 140,  40, 180 }; break; // amber
         case net::TYPE_HELO:    trail_init.color = { 80, 220, 100, 200 }; break; // lime
         case net::TYPE_UAV:     trail_init.color = {200, 120, 255, 200 }; break; // violet
+        case net::TYPE_UCAV:    trail_init.color = {150, 110, 255, 200 }; break; // indigo
+        case net::TYPE_SAM:     trail_init.color = {240, 200,  60, 180 }; break; // yellow
         case net::TYPE_SHIP:    trail_init.color = {160, 160, 220, 180 }; break; // lavender
         default:                trail_init.color = {  0, 200, 255, 180 }; break; // cyan
     }
@@ -689,8 +699,7 @@ flecs::entity Application::get_or_create_entity(const net::EntityState& state) {
         .set<ecs::RenderModel>(rm);
 
     auto& meta = e.get_mut<ecs::EntityMeta>();
-    std::memcpy(meta.callsign, state.callsign, net::kCallsignLen);
-    meta.callsign[net::kCallsignLen - 1] = '\0';
+    std::memcpy(meta.callsign, callsign, net::kCallsignLen);
 
     entity_map_.emplace(key, e);
     TraceLog(LOG_INFO, "Spawned entity '%s' type=%d", ename, state.entity_type);

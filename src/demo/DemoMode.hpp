@@ -21,6 +21,8 @@ namespace afteraction::demo {
 //    BRAVO1   AAA      — air-defence site east of the field
 //    EAGLE01  helo     — low patrol 150 m above the terrain
 //    ANKA01   UAV      — holding pattern at 4 800 m west of the field
+//    ANKA3    UCAV     — ANKA-3-style flying wing, fast orbit at 7 000 m
+//    HISAR1   SAM      — launcher site north-east of the field
 //    CONVOY1  ground   — vehicle loop on the plain south of the base
 // ─────────────────────────────────────────────────────────────────────────────
 

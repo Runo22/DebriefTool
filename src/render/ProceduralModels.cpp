@@ -394,6 +394,35 @@ ModelEntry make_uav() {
     return e;
 }
 
+// ── ANKA-3-style flying-wing UCAV ────────────────────────────────────────────
+ModelEntry make_ucav() {
+    const Color body{ 92, 97, 104, 255 }, dark{ 30, 32, 36, 255 }, edge{ 74, 78, 84, 255 };
+    MeshBuilder b;
+    // Blended centre body, flat and wide, with the intake hump on top.
+    b.loft({ { -4.40f, 0.02f, 0.05f, 0.03f, 1.6f, body },
+             { -3.70f, 0.05f, 0.60f, 0.22f, 1.8f, body },
+             { -2.40f, 0.08f, 1.10f, 0.40f, 2.0f, body },
+             { -0.60f, 0.10f, 1.30f, 0.50f, 2.2f, body },
+             {  1.40f, 0.08f, 1.15f, 0.42f, 2.2f, body },
+             {  3.00f, 0.05f, 0.80f, 0.28f, 2.4f, body },
+             {  3.70f, 0.03f, 0.55f, 0.18f, 2.6f, body } }, 20, true);
+    // Dorsal intake: a flattened scoop with a dark mouth.
+    b.loft({ { -1.90f, 0.50f, 0.42f, 0.14f, 3.0f, dark },
+             { -1.80f, 0.52f, 0.46f, 0.16f, 3.0f, body },
+             {  0.20f, 0.52f, 0.40f, 0.14f, 3.0f, body },
+             {  1.60f, 0.42f, 0.10f, 0.05f, 2.0f, body } }, 12, false, true);
+    // Exhaust slot at the tail.
+    b.block(0, -0.06f, 0.14f, 3.55f, 3.75f, 0.45f, 0.42f, dark);
+    // Cranked lambda wing: inner panel, then the outer panel with a slight
+    // forward kink in the trailing edge (the ANKA-3 "W" planform).
+    b.wing_pair({ 0.4f, 0.0f, -3.9f }, 7.2f, { 3.2f, 0.0f, -1.2f }, 3.2f, 0.07f, body);
+    b.wing_pair({ 3.2f, 0.0f, -1.2f }, 3.2f, { 6.0f, 0.0f, 1.3f }, 0.9f, 0.06f, body, edge);
+    ModelEntry e;
+    e.model = b.build();
+    e.length = 12.0f;   // span
+    return e;
+}
+
 // ── Air-to-air missile ───────────────────────────────────────────────────────
 ModelEntry make_missile() {
     const Color white{ 226, 228, 230, 255 }, nose{ 64, 66, 70, 255 }, band{ 170, 140, 40, 255 };
@@ -467,6 +496,50 @@ ModelEntry make_armour() {
     return e;
 }
 
+// ── HİSAR-O-style SAM launcher (6×6 truck, raised missile canisters) ─────────
+ModelEntry make_sam() {
+    const Color body{ 90, 98, 72, 255 }, dark{ 30, 31, 30, 255 }, glass{ 60, 76, 86, 255 };
+    const Color pod{ 104, 112, 84, 255 };
+    MeshBuilder b;
+    b.block(0, 0.85f, 1.15f, -4.6f, 4.8f, 1.15f, 1.15f, dark);                      // chassis rails
+    b.block(0, 1.15f, 3.05f, -4.9f, -2.9f, 1.25f, 1.15f, body, -4.4f);              // cab
+    b.block(0, 2.30f, 2.85f, -4.64f, -4.50f, 1.05f, 1.0f, glass, -4.49f, -4.36f);   // windscreen (on the slope)
+    b.block(0, 1.15f, 1.65f, -2.7f, 4.8f, 1.25f, 1.25f, body);                      // flat bed
+    wheels(b, { -3.6f, 1.6f, 3.2f }, 1.20f, 0.60f, dark);
+
+    // Launcher: a box of 2×3 canisters raised to 50°, pointing forward/up from
+    // a turntable at the rear of the bed.
+    const float elev = 50.0f * kPi / 180.0f;
+    const Vector3 ax{ 0.0f, std::sin(elev), -std::cos(elev) };       // along the canisters
+    const Vector3 up{ 0.0f, std::cos(elev),  std::sin(elev) };
+    const Vector3 side{ 1.0f, 0.0f, 0.0f };
+    const Vector3 pivot{ 0.0f, 2.05f, 3.9f };
+    const float len = 5.2f, half_w = 0.95f, half_h = 0.62f;
+    const Vector3 base_c = Vector3Add(pivot, Vector3Scale(up, half_h));
+    auto corner = [&](float a, float sx, float sy) {
+        return Vector3Add(base_c, Vector3Add(Vector3Scale(ax, a * len),
+                          Vector3Add(Vector3Scale(side, sx * half_w), Vector3Scale(up, sy * half_h))));
+    };
+    const Vector3 box[8] = { corner(0, -1, -1), corner(0, 1, -1), corner(1, 1, -1), corner(1, -1, -1),
+                             corner(0, -1,  1), corner(0, 1,  1), corner(1, 1,  1), corner(1, -1,  1) };
+    b.hexa(box, pod);
+    for (int r = 0; r < 2; ++r)                                        // canister mouths
+        for (int c = 0; c < 3; ++c) {
+            const Vector3 m = Vector3Add(Vector3Add(base_c, Vector3Scale(ax, len + 0.02f)),
+                                         Vector3Add(Vector3Scale(side, (c - 1) * 0.62f),
+                                                    Vector3Scale(up, (r - 0.5f) * 0.6f)));
+            b.cylinder(Vector3Subtract(m, Vector3Scale(ax, 0.05f)), m, 0.24f, 0.24f, 12, dark);
+        }
+    b.cylinder({ 0, 1.65f, 3.9f }, { 0, 2.05f, 3.9f }, 0.75f, 0.75f, 14, body);      // turntable
+    b.block(0, 1.65f, 2.35f, 0.2f, 1.6f, 1.1f, 1.0f, body);                          // equipment box
+    b.cylinder({ 0, 2.35f, 0.9f }, { 0, 3.3f, 0.9f }, 0.08f, 0.08f, 8, dark);        // EO / radar mast
+    b.block(0, 3.3f, 3.75f, 0.75f, 1.05f, 0.45f, 0.42f, pod);
+    ModelEntry e;
+    e.model = b.build();
+    e.length = 9.8f;
+    return e;
+}
+
 // ── MİLGEM (Ada-class) corvette ──────────────────────────────────────────────
 ModelEntry make_corvette() {
     const Color hull{ 128, 134, 140, 255 }, sup{ 150, 155, 160, 255 };
@@ -521,6 +594,8 @@ void build_procedural_models(std::unordered_map<uint16_t, ModelEntry>& out, Mode
     out[net::TYPE_JET]     = make_fighter();
     out[net::TYPE_HELO]    = make_helicopter();
     out[net::TYPE_UAV]     = make_uav();
+    out[net::TYPE_UCAV]    = make_ucav();
+    out[net::TYPE_SAM]     = make_sam();
     out[net::TYPE_MISSILE] = make_missile();
     out[net::TYPE_AAA]     = make_air_defence();
     out[net::TYPE_GROUND]  = make_armour();

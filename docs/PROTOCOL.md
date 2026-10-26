@@ -58,7 +58,7 @@ The demo sender has a shortcut: `python scripts/test_sender.py --clear`.
 | `id`       | `uint32`    | 4     | —            | **Stable, unique** ID for this unit. Never reuse or change it for the life of the track. |
 | `type`     | `uint16`    | 2     | enum         | Entity type (see table below). Controls the model/shape and trail colour. |
 | `health`   | `uint8`     | 1     | `0`–`255`    | `255` = full health, `0` = destroyed (the entity is hidden). Use `255` if you don't track health. |
-| `callsign` | `char[32]`  | 32    | UTF-8        | Display name, null-padded. Up to **31 characters** + a trailing `\0`. e.g. `"VIPER01"`. |
+| `callsign` | `char[32]`  | 32    | UTF-8        | Display name, null-padded. Up to **31 characters** + a trailing `\0`. e.g. `"VIPER01"`. Shown up to the first byte that isn't valid text (control byte or broken UTF-8), so zero the field before writing the name. |
 | `lat`      | `float64`   | 8     | degrees      | Latitude, decimal degrees (e.g. `36.8500`). |
 | `lon`      | `float64`   | 8     | degrees      | Longitude, decimal degrees (e.g. `35.1200`). |
 | `alt`      | `float64`   | 8     | metres MSL   | Altitude in **metres above sea level** (absolute). Displayed in feet (metres in parentheses). |
@@ -91,6 +91,8 @@ Python format string: `"<IHB32sdddddddQ"`
 | 5     | `TYPE_HELO`    | Helicopter   |
 | 6     | `TYPE_SHIP`    | Ship         |
 | 7     | `TYPE_UAV`     | UAV          |
+| 8     | `TYPE_UCAV`    | UCAV (jet, unmanned combat aircraft) |
+| 9     | `TYPE_SAM`     | SAM launcher |
 
 ---
 
