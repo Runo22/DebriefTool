@@ -93,6 +93,7 @@ Python format string: `"<IHB32sdddddddQ"`
 | 7     | `TYPE_UAV`     | UAV          |
 | 8     | `TYPE_UCAV`    | UCAV (jet, unmanned combat aircraft) |
 | 9     | `TYPE_SAM`     | SAM launcher |
+| 10    | `TYPE_PROP`    | Propeller aircraft |
 
 ---
 

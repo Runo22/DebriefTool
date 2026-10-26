@@ -104,6 +104,7 @@ enum EntityTypeId : uint16_t {
     TYPE_UAV     = 7,
     TYPE_UCAV    = 8,   // jet-powered unmanned combat aircraft (ANKA-3 style)
     TYPE_SAM     = 9,   // surface-to-air missile launcher
+    TYPE_PROP    = 10,  // propeller aircraft (HÜRKUŞ style)
 };
 
 inline constexpr uint8_t kMagic[4]    = {'D','B','F','1'};

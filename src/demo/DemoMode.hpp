@@ -23,6 +23,7 @@ namespace afteraction::demo {
 //    ANKA01   UAV      — holding pattern at 4 800 m west of the field
 //    ANKA3    UCAV     — ANKA-3-style flying wing, fast orbit at 7 000 m
 //    HISAR1   SAM      — launcher site north-east of the field
+//    HURKUS1  prop     — turboprop trainer on a low circuit east of the runway
 //    CONVOY1  ground   — vehicle loop on the plain south of the base
 // ─────────────────────────────────────────────────────────────────────────────
 

@@ -41,6 +41,7 @@ const char* entity_type_icon(uint16_t t) {
     case net::TYPE_UAV:     return ICON_FA_PLANE_UP;
     case net::TYPE_UCAV:    return ICON_FA_JET_FIGHTER_UP;
     case net::TYPE_SAM:     return ICON_FA_SHIELD_HALVED;
+    case net::TYPE_PROP:    return ICON_FA_PLANE;
     default:                return ICON_FA_CIRCLE_QUESTION;
     }
 }
@@ -56,6 +57,7 @@ const char* entity_type_name(uint16_t t) {
     case net::TYPE_UAV:     return "UAV";
     case net::TYPE_UCAV:    return "UCAV";
     case net::TYPE_SAM:     return "SAM";
+    case net::TYPE_PROP:    return "Prop";
     default:                return "Unknown";
     }
 }
@@ -72,6 +74,7 @@ ImVec4 entity_type_color(uint16_t t) {
     case net::TYPE_UAV:     return { 0.78f, 0.47f, 1.00f, 1.0f };
     case net::TYPE_UCAV:    return { 0.59f, 0.43f, 1.00f, 1.0f };
     case net::TYPE_SAM:     return { 0.94f, 0.78f, 0.24f, 1.0f };
+    case net::TYPE_PROP:    return { 0.35f, 0.85f, 0.80f, 1.0f };
     default:                return { 0.20f, 0.80f, 1.00f, 1.0f };
     }
 }
@@ -1263,7 +1266,7 @@ void AfterActionUI::settings_models() {
          "Preview scale and rotation with the 'hangar' tool.");
     ImGui::Spacing();
 
-    const char* kTypeNames[] = { "Unknown", "Jet", "Missile", "AAA", "Ground", "Helo", "Ship", "UAV", "UCAV", "SAM" };
+    const char* kTypeNames[] = { "Unknown", "Jet", "Missile", "AAA", "Ground", "Helo", "Ship", "UAV", "UCAV", "SAM", "Prop" };
     int remove_idx = -1;
     for (int i = 0; i < (int)state_.model_bindings.size(); ++i) {
         auto& b = state_.model_bindings[i];

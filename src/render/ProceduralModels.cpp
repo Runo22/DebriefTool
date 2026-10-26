@@ -423,6 +423,57 @@ ModelEntry make_ucav() {
     return e;
 }
 
+// ── HÜRKUŞ-style turboprop trainer ───────────────────────────────────────────
+ModelEntry make_prop_trainer() {
+    const Color body{ 228, 230, 232, 255 }, red{ 200, 32, 38, 255 }, dark{ 34, 36, 40, 255 };
+    const Color glass{ 70, 92, 112, 255 }, metal{ 96, 98, 102, 255 };
+    MeshBuilder b;
+    // Fuselage: spinner, long turboprop cowling, tandem cockpit, slim tail cone.
+    b.loft({ { -5.75f, 0.10f, 0.03f, 0.03f, 2.0f, red },
+             { -5.55f, 0.10f, 0.22f, 0.22f, 2.0f, red },
+             { -5.30f, 0.10f, 0.30f, 0.30f, 2.0f, red },
+             { -5.30f, 0.10f, 0.30f, 0.30f, 2.0f, body },
+             { -5.10f, 0.08f, 0.46f, 0.50f, 2.4f, body },
+             { -3.80f, 0.05f, 0.56f, 0.64f, 2.6f, body },
+             { -2.40f, 0.05f, 0.60f, 0.70f, 2.6f, body },
+             {  0.50f, 0.08f, 0.58f, 0.68f, 2.6f, body },
+             {  2.50f, 0.16f, 0.38f, 0.48f, 2.4f, body },
+             {  4.60f, 0.30f, 0.18f, 0.26f, 2.2f, body },
+             {  5.50f, 0.36f, 0.08f, 0.14f, 2.0f, body } }, 20, true);
+    // Long tandem canopy (student front, instructor raised behind).
+    b.loft({ { -3.00f, 0.62f, 0.05f, 0.05f, 2.0f, glass },
+             { -2.40f, 0.78f, 0.40f, 0.30f, 2.0f, glass },
+             { -1.20f, 0.88f, 0.46f, 0.40f, 2.0f, glass },
+             {  0.20f, 0.92f, 0.44f, 0.40f, 2.0f, glass },
+             {  1.10f, 0.82f, 0.30f, 0.24f, 2.0f, glass },
+             {  1.10f, 0.82f, 0.30f, 0.24f, 2.0f, body },
+             {  2.20f, 0.60f, 0.05f, 0.05f, 2.0f, body } }, 16, false);
+    // Exhaust stubs either side of the cowling.
+    for (float sx : { -1.0f, 1.0f })
+        b.cylinder({ sx * 0.48f, 0.05f, -4.0f }, { sx * 0.70f, 0.02f, -3.7f }, 0.13f, 0.11f, 10, metal);
+    // Surfaces with solid red tips (trainer scheme): the outer `tip` fraction
+    // of each panel is a separate red piece, so the colour doesn't fade.
+    auto two_tone = [&](Vector3 root, float rc, Vector3 tip_le, float tc, float th, float tip, bool pair) {
+        const float t = 1.0f - tip;
+        const Vector3 mid = Vector3Lerp(root, tip_le, t);
+        const float mc = rc + (tc - rc) * t;
+        if (pair) { b.wing_pair(root, rc, mid, mc, th, body); b.wing_pair(mid, mc, tip_le, tc, th, red); }
+        else      { b.wing(root, rc, mid, mc, th, body);      b.wing(mid, mc, tip_le, tc, th, red); }
+    };
+    // Low wing with slight dihedral; tailplane and fin.
+    two_tone({ 0.5f, -0.40f, -1.10f }, 2.30f, { 5.0f, -0.08f, -0.55f }, 1.15f, 0.13f, 0.22f, true);
+    two_tone({ 0.2f, 0.32f, 3.85f }, 1.30f, { 2.0f, 0.36f, 4.45f }, 0.75f, 0.09f, 0.30f, true);
+    two_tone({ 0.0f, 0.40f, 3.45f }, 1.90f, { 0.0f, 2.10f, 4.85f }, 0.90f, 0.09f, 0.30f, false);
+    // Ventral strake / antenna
+    b.wing({ 0.0f, -0.55f, 3.6f }, 0.9f, { 0.0f, -0.85f, 4.2f }, 0.4f, 0.08f, body);
+
+    ModelEntry e;
+    e.model = b.build();
+    e.length = 11.2f;
+    e.spinners.push_back({ make_rotor(4, 1.30f, 0.24f, { 0, 0, 1 }, dark), { 0.0f, 0.10f, -5.62f }, { 0, 0, 1 }, 7.0f });
+    return e;
+}
+
 // ── Air-to-air missile ───────────────────────────────────────────────────────
 ModelEntry make_missile() {
     const Color white{ 226, 228, 230, 255 }, nose{ 64, 66, 70, 255 }, band{ 170, 140, 40, 255 };
@@ -596,6 +647,7 @@ void build_procedural_models(std::unordered_map<uint16_t, ModelEntry>& out, Mode
     out[net::TYPE_UAV]     = make_uav();
     out[net::TYPE_UCAV]    = make_ucav();
     out[net::TYPE_SAM]     = make_sam();
+    out[net::TYPE_PROP]    = make_prop_trainer();
     out[net::TYPE_MISSILE] = make_missile();
     out[net::TYPE_AAA]     = make_air_defence();
     out[net::TYPE_GROUND]  = make_armour();

@@ -129,6 +129,17 @@ void DemoMode::reset() {
         f.max_climb = 15.0;
         flyers_.push_back(f);
     }
+    // HURKUS1 — turboprop trainer flying a low circuit east of the runway.
+    {
+        Flyer f{11, net::TYPE_PROP, "HURKUS1"};
+        f.route = { {  2500, -2500, 450, 110, true }, {  6500, -8500, 450, 110, true },
+                    {  9500, -6500, 450, 110, true }, {  5500,   -500, 450, 110, true } };
+        f.x = 1500; f.z = -1000; f.speed = 110; f.hdg = 330;
+        f.alt = ground(f.x, f.z) + 450;
+        f.max_turn = 9.0;
+        f.max_climb = 12.0;
+        flyers_.push_back(f);
+    }
     // CONVOY1 — ground vehicle loop on the plain south-east of the base.
     {
         Flyer f{7, net::TYPE_GROUND, "CONVOY1"};

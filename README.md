@@ -143,6 +143,7 @@ Built-in models are at real size and loosely modelled on Turkish platforms
 | 7 | UAV | ANKA-style MALE UAV (spinning propeller) |
 | 8 | UCAV | ANKA-3-style flying wing |
 | 9 | SAM launcher | HİSAR-O-style 6×6 launcher with raised canisters |
+| 10 | Propeller aircraft | HÜRKUŞ-style turboprop trainer (spinning propeller) |
 
 ### C++ sender example
 

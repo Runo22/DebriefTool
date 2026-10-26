@@ -13,6 +13,7 @@ namespace afteraction {
 //    TYPE_UAV     ANKA-style MALE UAV (spinning pusher propeller)
 //    TYPE_UCAV    ANKA-3-style flying-wing UCAV
 //    TYPE_SAM     HİSAR-O-style SAM launcher (6×6 truck, raised canisters)
+//    TYPE_PROP    HÜRKUŞ-style turboprop trainer (spinning 4-blade propeller)
 //    TYPE_MISSILE air-to-air missile
 //    TYPE_AAA     KORKUT-style tracked twin-gun air-defence vehicle
 //    TYPE_GROUND  6×6 armoured vehicle
