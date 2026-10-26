@@ -108,7 +108,7 @@ struct Database::Impl {
 
     std::shared_ptr<const Tile> decode(const Layer& L, const TileEntry& e) const;
     std::shared_ptr<const Tile> tile(size_t li, uint32_t tx, uint32_t ty) const;
-    float sample(size_t li, uint32_t r, uint32_t c) const;
+    std::optional<float> sample(size_t li, uint32_t r, uint32_t c) const;
     std::optional<float> bilinear(size_t li, double lat, double lon, float* edge_w) const;
     std::optional<float> blended(double lat, double lon, float min_res) const;
     void evict_locked() const;
@@ -127,7 +127,8 @@ std::shared_ptr<const Tile> Database::Impl::decode(const Layer& L, const TileEnt
         L.pack->in.read(reinterpret_cast<char*>(blob.data()), e.size);
         if (!L.pack->in) return nullptr;
     }
-    // sinfl may write up to a few bytes past the logical end; give it slack.
+    // A little slack lets sinfl use its fast copy paths near the end (its
+    // bounds checks stop it from ever writing past the buffer).
     std::vector<uint8_t> planes(2 * n + 64);
     const int got = tdem_sinflate_impl(planes.data(), static_cast<int>(planes.size()),
                                        blob.data(), static_cast<int>(blob.size()));
@@ -192,10 +193,11 @@ std::shared_ptr<const Tile> Database::Impl::tile(size_t li, uint32_t tx, uint32_
     return t;
 }
 
-float Database::Impl::sample(size_t li, uint32_t r, uint32_t c) const {
+std::optional<float> Database::Impl::sample(size_t li, uint32_t r, uint32_t c) const {
     const uint32_t T = layers[li].info.tile_size;
     auto t = tile(li, c / T, r / T);
-    return t ? (*t)[size_t(r % T) * T + (c % T)] : 0.0f;
+    if (!t) return std::nullopt;
+    return (*t)[size_t(r % T) * T + (c % T)];
 }
 
 std::optional<float> Database::Impl::bilinear(size_t li, double lat, double lon, float* edge_w) const {
@@ -220,8 +222,13 @@ std::optional<float> Database::Impl::bilinear(size_t li, double lat, double lon,
         h10 = (*t)[base + (r1 - r0) * size_t(T)];
         h11 = (*t)[base + (r1 - r0) * size_t(T) + (c1 - c0)];
     } else {
-        h00 = sample(li, r0, c0); h01 = sample(li, r0, c1);
-        h10 = sample(li, r1, c0); h11 = sample(li, r1, c1);
+        // Straddles tiles: a tile that fails to decode makes the whole sample
+        // unavailable (the caller then falls back to a coarser layer) rather
+        // than mixing in 0 m.
+        const auto a = sample(li, r0, c0), b = sample(li, r0, c1);
+        const auto c = sample(li, r1, c0), d = sample(li, r1, c1);
+        if (!a || !b || !c || !d) return std::nullopt;
+        h00 = *a; h01 = *b; h10 = *c; h11 = *d;
     }
     if (edge_w) {
         if (I.blend_m > 0.0f) {
@@ -286,6 +293,9 @@ bool Database::add_pack(const std::string& path, std::string* err) {
     pf->path = path;
     pf->in.open(path, std::ios::binary);
     if (!pf->in) return fail("cannot open");
+    pf->in.seekg(0, std::ios::end);
+    const uint64_t file_size = static_cast<uint64_t>(std::max<std::streamoff>(0, pf->in.tellg()));
+    pf->in.seekg(0, std::ios::beg);
 
     uint8_t hdr[kFileHeaderSize];
     if (!pf->in.read(reinterpret_cast<char*>(hdr), sizeof(hdr))) return fail("truncated header");
@@ -322,17 +332,30 @@ bool Database::add_pack(const std::string& path, std::string* err) {
             !(I.dlat > 0) || !(I.dlon > 0) || !(I.quant_step > 0))
             return fail("bad layer header '" + I.name + "'");
 
-        L.tiles_x = (I.cols + I.tile_size - 1) / I.tile_size;
-        L.tiles_y = (I.rows + I.tile_size - 1) / I.tile_size;
-        const size_t nt = size_t(L.tiles_x) * L.tiles_y;
-        std::vector<uint8_t> tb(nt * kTileEntrySize);
+        // Everything below is checked against the file size, so a corrupt or
+        // hostile header can't cause huge allocations or out-of-range reads.
+        const uint64_t tx = (uint64_t(I.cols) + I.tile_size - 1) / I.tile_size;
+        const uint64_t ty = (uint64_t(I.rows) + I.tile_size - 1) / I.tile_size;
+        if (tx >= (1u << 24) || ty >= (1u << 24))            // also keeps cache keys unique
+            return fail("layer too large '" + I.name + "'");
+        L.tiles_x = static_cast<uint32_t>(tx);
+        L.tiles_y = static_cast<uint32_t>(ty);
+        const uint64_t nt = tx * ty;
+        if (ttab > file_size || nt > (file_size - ttab) / kTileEntrySize)
+            return fail("truncated tile table '" + I.name + "'");
+        std::vector<uint8_t> tb(static_cast<size_t>(nt) * kTileEntrySize);
         pf->in.seekg(static_cast<std::streamoff>(ttab));
         if (!pf->in.read(reinterpret_cast<char*>(tb.data()), static_cast<std::streamsize>(tb.size())))
             return fail("truncated tile table");
-        L.tiles.resize(nt);
+        const uint64_t max_blob = 2ull * I.tile_size * I.tile_size + 4096;   // DEFLATE worst case
+        L.tiles.resize(static_cast<size_t>(nt));
         for (size_t k = 0; k < nt; ++k) {
             const uint8_t* p = tb.data() + k * kTileEntrySize;
             L.tiles[k] = TileEntry{rd_u64(p), rd_u32(p + 8), rd_i32(p + 12), rd_f32(p + 16), rd_f32(p + 20)};
+            const TileEntry& e = L.tiles[k];
+            if (e.offset != 0 && (e.size == 0 || e.size > max_blob || e.offset > file_size ||
+                                  e.size > file_size - e.offset))
+                return fail("bad tile entry in '" + I.name + "'");
         }
         const double mid = 0.5 * (I.north + I.south()) * kDegToRad;
         L.m_per_row = I.dlat * 111132.92;

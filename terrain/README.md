@@ -10,7 +10,7 @@ terrain/
 ├── data/terrain.tdem     all layers in one file (49 MB)
 ├── include/tdem/tdem.hpp C++ API
 ├── src/tdem.cpp          reader implementation
-├── third_party/sinfl.h   public-domain DEFLATE decoder (vendored)
+├── third_party/sinfl.h   public-domain DEFLATE decoder (vendored; output bounds checks added)
 ├── tools/                build_pack.py + regions.json (data builder), tdem_cli.cpp
 ├── tests/                C++ test + reference vectors
 └── FORMAT.md             byte-level file format

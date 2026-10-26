@@ -428,6 +428,8 @@ sinfl_decompress(unsigned char *out, int cap, const unsigned char *in, int size)
         return (int)(out-o);
       if (len > (e - s.bitptr) || !len)
         return (int)(out-o);
+      if (len > (size_t)(oe - out))     /* tdem: never write past the output buffer */
+        return (int)(out-o);
 
       memcpy(out, s.bitptr, (size_t)len);
       s.bitptr += len, out += len;
@@ -458,6 +460,7 @@ sinfl_decompress(unsigned char *out, int cap, const unsigned char *in, int size)
       {int nlit = 257 + sinfl__get(&s,5);
       int ndist = 1 + sinfl__get(&s,5);
       int nlen = 4 + sinfl__get(&s,4);
+      if (nlit > 286 || ndist > 30) return (int)(out-o);   /* tdem: invalid per RFC 1951 */
       for (n = 0; n < nlen; n++)
         nlens[order[n]] = (unsigned char)sinfl_get(&s,3);
       sinfl_build(hlens, nlens, 7, 7, 19);
@@ -467,10 +470,23 @@ sinfl_decompress(unsigned char *out, int cap, const unsigned char *in, int size)
         int sym = 0;
         sinfl_refill(&s);
         sym = sinfl_decode(&s, hlens, 7);
+        /* tdem: repeats must stay inside lens[] and code 16 needs a previous length */
         switch (sym) {default: lens[n++] = (unsigned char)sym; break;
-        case 16: for (i=3+sinfl_get(&s,2);i;i--,n++) lens[n]=lens[n-1]; break;
-        case 17: for (i=3+sinfl_get(&s,3);i;i--,n++) lens[n]=0; break;
-        case 18: for (i=11+sinfl_get(&s,7);i;i--,n++) lens[n]=0; break;}
+        case 16:
+          i=3+sinfl_get(&s,2);
+          if (!n || n+i > nlit+ndist) return (int)(out-o);
+          for (;i;i--,n++) lens[n]=lens[n-1];
+          break;
+        case 17:
+          i=3+sinfl_get(&s,3);
+          if (n+i > nlit+ndist) return (int)(out-o);
+          for (;i;i--,n++) lens[n]=0;
+          break;
+        case 18:
+          i=11+sinfl_get(&s,7);
+          if (n+i > nlit+ndist) return (int)(out-o);
+          for (;i;i--,n++) lens[n]=0;
+          break;}
       }
       /* build lit/dist tables */
       sinfl_build(s.lits, lens, 10, 15, nlit);
@@ -491,6 +507,7 @@ sinfl_decompress(unsigned char *out, int cap, const unsigned char *in, int size)
           *out++ = (unsigned char)sym;
           sym = sinfl_decode(&s, s.lits, 10);
           if (sym < 256) {
+            if (sinfl_unlikely(out >= oe)) return (int)(out-o);   /* tdem */
             *out++ = (unsigned char)sym;
             continue;
           }
@@ -512,6 +529,9 @@ sinfl_decompress(unsigned char *out, int cap, const unsigned char *in, int size)
         int offs = sinfl__get(&s, dbits[dsym]) + dbase[dsym];
         unsigned char *dst = out, *src = out - offs;
         if (sinfl_unlikely(offs > (int)(out-o))) {
+          return (int)(out-o);
+        }
+        if (sinfl_unlikely(len > oe - out)) {   /* tdem: match would overrun the output */
           return (int)(out-o);
         }
         out = out + len;
