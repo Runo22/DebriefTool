@@ -18,6 +18,7 @@
 #include <raylib.h>
 #include <future>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace afteraction {
 
@@ -187,6 +188,7 @@ private:
     // skewed clocks or a sender restarting don't scramble the timeline.
     uint64_t to_local_time(uint32_t source_id, uint64_t ts_ns);
     std::unordered_map<uint32_t, int64_t> source_offset_ns_;
+    std::unordered_set<uint64_t> logged_raw_callsigns_;   // tracks whose raw callsign was logged
     bool     was_live_ = true;
     uint64_t advance_live_clock(float dt);
     uint64_t live_newest_ns_ = 0;      // newest sample timestamp

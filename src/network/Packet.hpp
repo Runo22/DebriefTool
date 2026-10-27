@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <vector>
 #include <array>
+#include <utility>
 
 // -----------------------------------------------------------------------------
 //  AFTERACTION UDP Wire Protocol  --  send packets to UDP port 22522
@@ -39,12 +40,34 @@ namespace afteraction::net {
 // format, the in-memory state and the recording format.
 inline constexpr int kCallsignLen = 32;
 
-// Keep a callsign only up to its first byte that isn't readable text: a
-// control character or a broken UTF-8 sequence (e.g. uninitialised memory a
-// sender copied after the name), then drop trailing spaces. Valid UTF-8 such
-// as Turkish letters is kept. `cs` must be null-terminated within `n` bytes.
+// Windows-1254 (Turkish ANSI) byte → UTF-8 for the 12 Turkish letters, or
+// nullptr. Windows programs often send names in this code page, not UTF-8.
+inline const char* cp1254_turkish_utf8(unsigned char c) noexcept {
+    switch (c) {
+    case 0xC7: return "\xC3\x87";  case 0xE7: return "\xC3\xA7";   // Ç ç
+    case 0xD0: return "\xC4\x9E";  case 0xF0: return "\xC4\x9F";   // Ğ ğ
+    case 0xDD: return "\xC4\xB0";  case 0xFD: return "\xC4\xB1";   // İ ı
+    case 0xD6: return "\xC3\x96";  case 0xF6: return "\xC3\xB6";   // Ö ö
+    case 0xDE: return "\xC5\x9E";  case 0xFE: return "\xC5\x9F";   // Ş ş
+    case 0xDC: return "\xC3\x9C";  case 0xFC: return "\xC3\xBC";   // Ü ü
+    default:   return nullptr;
+    }
+}
+
+// Make a received callsign displayable, in place (`cs` null-terminated within
+// `n` bytes, n <= 64):
+//  - valid UTF-8 is kept (Turkish letters included);
+//  - Turkish letters in Windows-1254 are converted to UTF-8;
+//  - the name ends at the first other byte that isn't readable text (control
+//    character, broken UTF-8 — e.g. uninitialised memory after the name — or
+//    U+FFFD, the mark of an earlier failed conversion);
+//  - trailing spaces, and a trailing run of two or more '?' (what Windows'
+//    WideCharToMultiByte writes for characters it can't convert), are dropped.
 inline void clean_callsign(char* cs, int n) noexcept {
-    int i = 0;
+    if (n <= 0) return;
+    if (n > 64) n = 64;
+    char out[64];
+    int i = 0, o = 0;
     while (i < n && cs[i] != '\0') {
         const auto c = static_cast<unsigned char>(cs[i]);
         int len = 0;
@@ -61,11 +84,27 @@ inline void clean_callsign(char* cs, int n) noexcept {
                 (c == 0xF0 && c1 < 0x90) || (c == 0xF4 && c1 > 0x8F))
                 ok = false;
         }
-        if (!ok) break;
+        if (ok && len == 3 && c == 0xEF && static_cast<unsigned char>(cs[i + 1]) == 0xBF &&
+            static_cast<unsigned char>(cs[i + 2]) == 0xBD)
+            break;                                          // U+FFFD
+        const char* src = cs + i;
+        int put = len;
+        if (!ok) {
+            src = cp1254_turkish_utf8(c);
+            if (!src) break;
+            put = 2;
+            len = 1;
+        }
+        if (o + put > n - 1) break;                         // keep whole characters only
+        for (int k = 0; k < put; ++k) out[o++] = src[k];
         i += len;
     }
-    while (i > 0 && cs[i - 1] == ' ') --i;
-    if (i < n) cs[i] = '\0';
+    while (o > 0 && out[o - 1] == ' ') --o;
+    int q = 0;
+    while (q < o && out[o - 1 - q] == '?') ++q;
+    if (q >= 2) { o -= q; while (o > 0 && out[o - 1] == ' ') --o; }
+    for (int k = 0; k < o; ++k) cs[k] = out[k];
+    for (int k = o; k < n; ++k) cs[k] = '\0';   // zero the rest: no stale bytes after the name
 }
 
 // -- Wire-format structs (no padding, little-endian) ------------------------
@@ -157,6 +196,9 @@ struct ParsedFrame {
     uint32_t sequence  = 0;
     std::vector<EntityState> entities;
     bool     clear_all = false;   // set when count == 0 (a "clear all tracks" packet)
+    // Callsigns that had to be cleaned, as received (entity id, raw 32 bytes) —
+    // logged once per track so a sender's encoding problem can be diagnosed.
+    std::vector<std::pair<uint32_t, std::array<char, kCallsignLen>>> raw_callsigns;
 };
 
 } // namespace afteraction::net

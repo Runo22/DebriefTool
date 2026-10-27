@@ -52,6 +52,11 @@ PacketParser::parse(std::span<const std::byte> buf) noexcept
         std::memcpy(s.callsign, wire.callsign, sizeof(wire.callsign));
         s.callsign[kCallsignLen - 1] = '\0';
         clean_callsign(s.callsign, kCallsignLen);
+        if (std::strncmp(s.callsign, wire.callsign, kCallsignLen) != 0) {
+            std::array<char, kCallsignLen> raw{};
+            std::memcpy(raw.data(), wire.callsign, kCallsignLen);
+            frame.raw_callsigns.emplace_back(wire.id, raw);
+        }
 
         s.lat_deg   = wire.lat;
         s.lon_deg   = wire.lon;

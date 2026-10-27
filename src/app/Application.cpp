@@ -630,6 +630,15 @@ void Application::process_inbound_queue() {
         // of being wiped on the next tick. (clear_all_entities() also resets
         // live_states_, so pre-CLEAR frames in this batch are correctly dropped.)
         if (frame->clear_all) { clear_all_entities(); continue; }
+        for (const auto& [id, raw] : frame->raw_callsigns) {
+            const uint64_t key = entity_key(frame->source_id, id);
+            if (!logged_raw_callsigns_.insert(key).second) continue;
+            char hex[3 * net::kCallsignLen + 1] = {};
+            for (int k = 0; k < net::kCallsignLen; ++k)
+                std::snprintf(hex + 3 * k, 4, "%02X ", static_cast<unsigned char>(raw[k]));
+            TraceLog(LOG_WARNING, "Callsign of track %u/%u needed cleaning; bytes as received: %s",
+                     frame->source_id, id, hex);
+        }
         for (auto& es : frame->entities) {
             es.timestamp_ns = to_local_time(es.source_id, es.timestamp_ns);
             ensure_origin_and_convert(es);

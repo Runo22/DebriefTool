@@ -831,7 +831,10 @@ void AfterActionUI::draw_inspector(const flecs::world& /*world*/) {
     push_heading();
     ImGui::TextColored(col, "%s", entity_type_icon(meta.type));
     ImGui::SameLine();
-    if (meta.callsign[0]) ImGui::Text("%.*s", net::kCallsignLen - 1, meta.callsign);
+    // Not ImGui::Text("%.*s", 31, …): ImGui's fast path for that exact format
+    // draws all 31 bytes without stopping at the '\0', so whatever followed
+    // the name in the buffer showed up as "???".
+    if (meta.callsign[0]) ImGui::TextUnformatted(meta.callsign);
     else                  ImGui::Text("#%u", meta.entity_id);
     pop_font();
     ImGui::SameLine();
