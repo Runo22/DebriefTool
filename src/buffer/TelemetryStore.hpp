@@ -2,6 +2,7 @@
 #include "../network/Packet.hpp"
 #include <algorithm>
 #include <array>
+#include <deque>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -31,7 +32,18 @@ struct EntityStateHistory {
     uint32_t write_idx = 0;  // next write position (wraps via % kCapacity)
     uint32_t count     = 0;  // number of valid entries (≤ kCapacity)
 
+    // Keeps frames in ascending time order (find_floor relies on it): a sample
+    // older than the newest is dropped, unless it is more than 5 s older — then
+    // the sender's clock restarted and the history starts over.
     void push(const Keyframe& kf) noexcept {
+        if (count > 0) {
+            const uint64_t newest = frames[(write_idx + kCapacity - 1) % kCapacity].timestamp_ns;
+            if (kf.timestamp_ns <= newest) {
+                if (kf.timestamp_ns + 5'000'000'000ULL >= newest) return;
+                write_idx = 0;
+                count = 0;
+            }
+        }
         frames[write_idx % kCapacity] = kf;
         ++write_idx;
         if (count < kCapacity) ++count;
@@ -62,7 +74,10 @@ struct EntityStateHistory {
     // Returns {a, b} where a.timestamp ≤ ts_ns < b.timestamp for interpolation.
     // If ts_ns is before all history, returns {frames[0], frames[0]}.
     // If ts_ns is after all history, returns {latest, latest}.
-    struct Bracket { const Keyframe* lo; const Keyframe* hi; };
+    // prev / next are the samples before lo and after hi (nullptr if none),
+    // used for the interpolation tangents.
+    struct Bracket { const Keyframe* lo; const Keyframe* hi;
+                     const Keyframe* prev = nullptr; const Keyframe* next = nullptr; };
     [[nodiscard]] Bracket bracket(uint64_t ts_ns) const noexcept {
         if (count == 0) return {&frames[0], &frames[0]};
         uint32_t start = (count < kCapacity) ? 0 : (write_idx % kCapacity);
@@ -70,8 +85,12 @@ struct EntityStateHistory {
         int floor_idx  = find_floor(ts_ns);
         if (floor_idx < 0) return {&frames[start], &frames[start]};
         if (static_cast<uint32_t>(floor_idx) == last) return {&frames[last], &frames[last]};
-        uint32_t next = (static_cast<uint32_t>(floor_idx) + 1) % kCapacity;
-        return {&frames[static_cast<uint32_t>(floor_idx)], &frames[next]};
+        const uint32_t lo = static_cast<uint32_t>(floor_idx);
+        const uint32_t logical = (lo + kCapacity - start) % kCapacity;   // 0 = oldest
+        Bracket b{ &frames[lo], &frames[(lo + 1) % kCapacity] };
+        if (logical > 0)          b.prev = &frames[(lo + kCapacity - 1) % kCapacity];
+        if (logical + 2 < count)  b.next = &frames[(lo + 2) % kCapacity];
+        return b;
     }
 };
 
@@ -94,27 +113,28 @@ public:
     };
 
     // Called from the main thread after consuming the SPSC queue.
+    // States are merged per entity until the next snapshot is due (20 Hz), so
+    // entities that report at different moments are all kept — not only the
+    // ones in the batch that happens to fall on the snapshot tick.
     void ingest(uint64_t now_ns, const std::vector<net::EntityState>& states) {
-        if ((now_ns - last_snapshot_ns_) < kSnapshotIntervalMs * 1'000'000ULL)
+        for (const auto& es : states)
+            pending_[(static_cast<uint64_t>(es.source_id) << 32) | es.entity_id] = es;
+        // Time going backwards by more than 5 s: a new timeline (restarted
+        // sender / new file) — take a snapshot right away.
+        if (now_ns + 5'000'000'000ULL < last_snapshot_ns_) last_snapshot_ns_ = 0;
+        if (now_ns < last_snapshot_ns_ ||
+            now_ns - last_snapshot_ns_ < kSnapshotIntervalMs * 1'000'000ULL)
             return;
-        last_snapshot_ns_ = now_ns;
+        write_snapshot(now_ns);
+    }
 
-        std::unique_lock lock(mu_);
-        Snapshot& slot = ring_[write_idx_ % kMaxSnapshots];
-        slot.timestamp_ns = now_ns;
-        slot.entities     = states; // copy — fast for small entity counts
-        ++write_idx_;
-        if (count_ < kMaxSnapshots) ++count_;
-
-        // Update per-entity histories
-        for (const auto& es : states) {
-            uint64_t key = (static_cast<uint64_t>(es.source_id) << 32) | es.entity_id;
-            auto& hist = entity_histories_[key];
-            hist.push_back(es);
-            if (hist.size() > kMaxSnapshots) {
-                hist.erase(hist.begin());
-            }
-        }
+    // Write out states still waiting for the next snapshot tick (call at the
+    // end of loading a file, so its last moments aren't lost).
+    void flush_pending() {
+        if (pending_.empty()) return;
+        uint64_t ts = last_snapshot_ns_;
+        for (const auto& [key, es] : pending_) ts = std::max(ts, es.timestamp_ns);
+        write_snapshot(ts);
     }
 
     // Reset the store, clearing all snapshots, indexes, and histories.
@@ -131,6 +151,7 @@ public:
         write_idx_ = 0;
         count_ = 0;
         last_snapshot_ns_ = 0;
+        pending_.clear();
         entity_histories_.clear();
     }
 
@@ -149,7 +170,7 @@ public:
     }
 
     // Retrieve the entire historical path of a specific entity.
-    [[nodiscard]] const std::vector<net::EntityState>* get_entity_history(uint32_t source_id, uint32_t entity_id) const {
+    [[nodiscard]] const std::deque<net::EntityState>* get_entity_history(uint32_t source_id, uint32_t entity_id) const {
         std::shared_lock lock(mu_);
         uint64_t key = (static_cast<uint64_t>(source_id) << 32) | entity_id;
         auto it = entity_histories_.find(key);
@@ -174,11 +195,13 @@ public:
         std::shared_lock lock(mu_);
         if (count_ == 0) return {};
 
-        uint64_t cutoff_ns = ring_[(write_idx_ - 1) % kMaxSnapshots].timestamp_ns
-                           - static_cast<uint64_t>(seconds * 1e9f);
+        if (!(seconds > 0.0f)) return {};
+        const uint64_t newest = ring_[(write_idx_ - 1) % kMaxSnapshots].timestamp_ns;
+        const double span = std::min(double(seconds) * 1e9, double(newest));   // no underflow
+        const uint64_t cutoff_ns = newest - static_cast<uint64_t>(span);
 
         std::vector<Snapshot> result;
-        result.reserve(static_cast<size_t>(seconds * 25));
+        result.reserve(std::min<size_t>(count_, static_cast<size_t>(std::min(seconds, 3600.0f) * 25)));
         uint32_t start = (count_ < kMaxSnapshots) ? 0 : (write_idx_ % kMaxSnapshots);
         for (uint32_t i = 0; i < count_; ++i) {
             const auto& s = ring_[(start + i) % kMaxSnapshots];
@@ -233,12 +256,33 @@ public:
     }
 
 private:
+    void write_snapshot(uint64_t ts_ns) {
+        last_snapshot_ns_ = ts_ns;
+        std::unique_lock lock(mu_);
+        Snapshot& slot = ring_[write_idx_ % kMaxSnapshots];
+        slot.timestamp_ns = ts_ns;
+        slot.entities.clear();
+        for (const auto& [key, es] : pending_) slot.entities.push_back(es);
+        pending_.clear();
+        ++write_idx_;
+        if (count_ < kMaxSnapshots) ++count_;
+
+        // Update per-entity histories
+        for (const auto& es : slot.entities) {
+            uint64_t key = (static_cast<uint64_t>(es.source_id) << 32) | es.entity_id;
+            auto& hist = entity_histories_[key];
+            hist.push_back(es);
+            if (hist.size() > kMaxSnapshots) hist.pop_front();   // O(1), unlike vector::erase
+        }
+    }
+
     mutable std::shared_mutex mu_;
     std::array<Snapshot, kMaxSnapshots> ring_{};
     uint32_t write_idx_       = 0;
     uint32_t count_           = 0;
     uint64_t last_snapshot_ns_= 0;
-    std::unordered_map<uint64_t, std::vector<net::EntityState>> entity_histories_;
+    std::unordered_map<uint64_t, net::EntityState> pending_;   // newest state per entity since the last snapshot
+    std::unordered_map<uint64_t, std::deque<net::EntityState>> entity_histories_;
 };
 
 } // namespace afteraction

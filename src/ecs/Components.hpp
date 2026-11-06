@@ -16,6 +16,8 @@
 //    reads; the raw history is what the interpolation system writes.
 // ─────────────────────────────────────────────────────────────────────────────
 
+namespace afteraction { struct ModelEntry; }
+
 namespace afteraction::ecs {
 
 // ── Identity ──────────────────────────────────────────────────────────────────
@@ -37,12 +39,13 @@ struct Velocity    { Vector3 v{ 0, 0, 0 }; };
 //   independently of the render system.
 struct HistoryComp { EntityStateHistory hist; };
 
+// Latest reported geographic position, exactly as received (live only). The
+// drawn position trails it slightly (interpolation delay).
+struct Reported { double lat = 0.0, lon = 0.0; bool live = false; };
+
 // ── Visual ────────────────────────────────────────────────────────────────────
 struct RenderModel {
-    Model*     model_ptr = nullptr; // non-owning — AssetManager owns the Model
-    float      scale     = 1.0f;
-    Color      tint      = WHITE;
-    Quaternion base_rot  = {0,0,0,1}; // model-space correction; see AssetManager
+    const ModelEntry* entry = nullptr;   // non-owning — AssetManager owns it (model, tint, scale, rotors)
 };
 
 // ── Trail ribbon ──────────────────────────────────────────────────────────────
@@ -69,11 +72,5 @@ struct Trail {
             fn(points[(start + i) % kMaxPoints]);
     }
 };
-
-// ── Selection ─────────────────────────────────────────────────────────────────
-struct Selected {};   // tag component — entity is currently selected in UI
-
-// ── Camera follow ─────────────────────────────────────────────────────────────
-struct CameraTarget {};  // tag — camera tracks this entity
 
 } // namespace afteraction::ecs

@@ -20,8 +20,8 @@ namespace afteraction {
 //  Two tiers of models:
 //
 //  1. PROCEDURAL (always available, no files needed):
-//     Each EntityTypeId gets a distinct built-in Raylib mesh shape with a
-//     colour tint so entities are recognisable out of the box.
+//     Each EntityTypeId gets a built-in vertex-coloured model at real size,
+//     loosely after Turkish platforms (see ProceduralModels.hpp).
 //
 //  2. LOADED (user-supplied via Assimp: FBX / OBJ / glTF):
 //     Call load() to import a file.  map_type() binds a type ID to that model.
@@ -33,18 +33,33 @@ namespace afteraction {
 //    • OpenGameArt          —  https://opengameart.org                 (varies)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// A part that turns about its own axis (rotor, propeller). Its mesh is centred
+// on the hub; `hub` and `axis` are in model space (before scale / base_rot).
+struct Spinner {
+    Model   model{};
+    Vector3 hub{};
+    Vector3 axis{0,1,0};
+    float   rev_per_sec = 1.0f;
+};
+
 struct ModelEntry {
-    Model      model;
+    Model      model{};
     Color      tint        = WHITE;
     float      scale       = 1.0f;
     Quaternion base_rot    = {0,0,0,1};  // model-space correction (applied before entity rotation)
+    float      length      = 10.0f;      // largest extent in metres after scale (for display sizing)
+    std::vector<Spinner> spinners;
 };
 
-// CPU-side parsed mesh (no GPU handles). Produced by the worker thread; uploaded
+// CPU-side parsed model (no GPU handles). Produced by the worker thread; uploaded
 // to the GPU on the main thread. Keeps the slow Assimp work off the render thread.
+// Split into parts of at most 65535 vertices (raylib meshes use 16-bit indices).
 struct CpuMesh {
-    std::vector<float>          vertices, normals, texcoords;
-    std::vector<unsigned short> indices;
+    struct Part {
+        std::vector<float>          vertices, normals, texcoords;
+        std::vector<unsigned short> indices;
+    };
+    std::vector<Part> parts;
 };
 
 class AssetManager {
@@ -92,6 +107,12 @@ public:
     void unload_all() noexcept;
     void init_procedural();
 
+    // Shared lit shader used by every model (procedural and loaded): sun +
+    // sky ambient, soft specular, two-sided, with the terrain's distance fog.
+    // Call once per frame before drawing models.
+    void set_frame_uniforms(Vector3 cam_pos, Vector3 sun_dir, Color fog, float fog_start, float fog_end) noexcept;
+    [[nodiscard]] Shader lit_shader() const noexcept { return lit_; }
+
 private:
     bool convert_assimp(const std::filesystem::path& path,
                         float scale, Color tint, Quaternion base_rot,
@@ -103,6 +124,9 @@ private:
                     Quaternion base_rot, ModelEntry& out) noexcept;
     void worker_loop();
     void stop_worker() noexcept;
+    void apply_lit(Model& m) const noexcept;
+    void release(Model& m) const noexcept;
+    void release(ModelEntry& e) const noexcept;
 
     std::unordered_map<std::string,  ModelEntry> named_;       // loaded models
     std::unordered_map<uint16_t,     std::string> type_to_name_; // type → named key
@@ -110,6 +134,8 @@ private:
 
     ModelEntry fallback_{};
     bool       ready_ = false;
+    Shader     lit_{};
+    int        loc_cam_ = -1, loc_sun_ = -1, loc_fog_col_ = -1, loc_fog_rng_ = -1;
 
     // ── Async loading machinery ────────────────────────────────────────────────
     struct LoadJob { std::string name; std::filesystem::path path;
@@ -123,6 +149,7 @@ private:
     std::deque<LoadJob>      jobs_;
     std::mutex               ready_mu_;
     std::vector<ReadyModel>  ready_models_;
+    std::vector<uint16_t>    repoint_pending_;   // types re-bound to an already-loaded model
     std::atomic<int>         inflight_{0};   // queued + parsing, not yet uploaded
 };
 

@@ -1,10 +1,7 @@
 @echo off
 setlocal EnableDelayedExpansion
 
-echo [afteraction] Initialising submodules...
-git submodule update --init --recursive --depth 1
-if errorlevel 1 (echo ERROR: submodule init failed && exit /b 1)
-
+rem All dependencies are vendored in third_party\ -- no network access needed.
 echo [afteraction] Configuring CMake (Visual Studio 2022, x64)...
 if not exist build mkdir build
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 ^

@@ -1,39 +1,81 @@
 #pragma once
+#include "../geo/GeoFrame.hpp"
 #include "../network/Packet.hpp"
+#include <functional>
 #include <vector>
 
 namespace afteraction::demo {
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Demo Mode — scripted flight scenario, no UDP required.
+//  Demo Mode — scripted scenario around Akıncı Air Base (LTAE), no UDP needed.
 //
-//  Call tick() each frame; it returns a list of EntityState objects in
-//  world-space ENU (metres, Y-up) ready to be injected directly into the ECS,
-//  bypassing the network stack entirely.
+//  tick() returns states exactly like the network would deliver them
+//  (lat / lon / MSL altitude + Euler angles + speed), so the demo exercises the
+//  same ingest path as live data. Ground units and low flyers follow the real
+//  terrain via the height callback.
 //
-//  Scenario (total ~90 seconds):
-//    VIPER01 (Blue Jet)   — circular orbit, 3 000 m, R=5 000 m, 200 m/s
-//    VIPER02 (Red Jet)    — counter-orbit,  4 000 m, R=7 000 m, 250 m/s
-//    AIM120  (Missile)    — launches at t=15 s, intercepts VIPER02 at ~t=30 s
-//    BRAVO1  (Ground)     — static AAA site at (2000, 0, -3000)
-//    EAGLE01 (Helicopter) — slow patrol,   200 m, R=1 500 m, 60 m/s
+//    VIPER01  jet      — lines up on runway 03, takes off, flies a racetrack
+//    VIPER02  jet      — wide orbit at 5 500 m
+//    VIPER03  jet      — figure-of-eight at 4 200 m
+//    AIM120   missile  — launched by VIPER02, chases VIPER03, self-destructs
+//    BRAVO1   AAA      — air-defence site east of the field
+//    EAGLE01  helo     — low patrol 150 m above the terrain
+//    ANKA01   UAV      — holding pattern at 4 800 m west of the field
+//    ANKA3    UCAV     — ANKA-3-style flying wing, fast orbit at 7 000 m
+//    HISAR1   SAM      — launcher site north-east of the field
+//    HURKUS1  prop     — turboprop trainer on a low circuit east of the runway
+//    HERKUL1  transport — C-130-style transport on a racetrack at 3 500 m
+//    CONVOY1  ground   — vehicle loop on the plain south of the base
 // ─────────────────────────────────────────────────────────────────────────────
 
-struct DemoMode {
-    double time = 0.0;   // accumulated simulation seconds
+// Terrain height (m MSL) at a lat/lon.
+using HeightFn = std::function<float(double lat, double lon)>;
 
-    // Returns entity states for the current frame.
-    // Positions are ENU metres from scene origin (lat=0,lon=0 → Raylib 0,0,0).
+class DemoMode {
+public:
+    static constexpr double kAnchorLat = 40.0789;   // Akıncı Air Base
+    static constexpr double kAnchorLon = 32.5656;
+
+    DemoMode();
+
+    void set_height_fn(HeightFn fn) { height_ = std::move(fn); }
     std::vector<net::EntityState> tick(float dt_sec);
+    void reset();
 
-    void reset() { time = 0.0; }
+    struct Waypoint { double x, z, alt, speed; bool agl; };
 
 private:
-    bool missile_fired_    = false;
-    bool missile_active_   = false;
-    float missile_x_       = 0.0f;
-    float missile_y_       = 0.0f;
-    float missile_z_       = 0.0f;
+    struct Flyer {
+        Flyer(uint32_t id_, uint16_t type_, const char* cs) : id(id_), type(type_), callsign(cs) {}
+        uint32_t    id;
+        uint16_t    type;
+        const char* callsign;
+        double x = 0, z = 0, alt = 0;          // ENU (m) from the anchor, MSL alt
+        double hdg = 0, pitch = 0, roll = 0;   // degrees
+        double speed = 0;                      // m/s
+        double max_turn = 3.0;                 // deg/s
+        double max_climb = 40.0;               // m/s
+        double accel = 8.0;                    // m/s²
+        std::vector<Waypoint> route;
+        size_t wp = 0;
+        bool   on_ground = false;              // ground roll / ground vehicle
+        double ride = 2.0;                     // model origin above ground when on_ground (m)
+        double rotate_speed = 0;               // takeoff speed (0 = stays on ground)
+        double hold_until = 0;                 // seconds before moving
+        bool   alive = true;
+    };
+
+    double ground(double x, double z) const;
+    void   step(Flyer& f, double dt);
+    net::EntityState to_state(const Flyer& f) const;
+
+    GeoFrame anchor_;
+    HeightFn height_;
+    double   time_ = 0.0;
+    std::vector<Flyer> flyers_;
+    // Missile engagement
+    bool   missile_launched_ = false;
+    double missile_t0_ = 0.0;
 };
 
 } // namespace afteraction::demo

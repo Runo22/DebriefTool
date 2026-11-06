@@ -18,12 +18,8 @@ namespace {
     WsaGuard g_wsa; // initialised at static init time
 
     void close_fd(SocketHandle s) { closesocket(s); }
-    int  last_error()             { return WSAGetLastError(); }
-    bool would_block(int e)       { return e == WSAEWOULDBLOCK || e == WSAETIMEDOUT; }
 #else
     void close_fd(SocketHandle s) { ::close(s); }
-    int  last_error()             { return errno; }
-    bool would_block(int e)       { return e == EAGAIN || e == EWOULDBLOCK; }
 #endif
 } // anon namespace
 

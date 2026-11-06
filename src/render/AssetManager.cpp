@@ -1,285 +1,143 @@
 #include "AssetManager.hpp"
+#include "ProceduralModels.hpp"
 #include <assimp/Importer.hpp>
+#include <assimp/config.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
+#if defined(__GNUC__)
+#  pragma GCC diagnostic push
+#  pragma GCC diagnostic ignored "-Wmissing-field-initializers"   // raymath.h
+#endif
 #include <raymath.h>
+#if defined(__GNUC__)
+#  pragma GCC diagnostic pop
+#endif
 #include <rlgl.h>
+#include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <vector>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 namespace afteraction {
 
-// Helper to merge multiple temporary meshes with local transforms into a single master Raylib Mesh.
-static Mesh merge_meshes(const std::vector<std::pair<Mesh, Matrix>>& parts) {
-    std::vector<float> vertices;
-    std::vector<float> normals;
-    std::vector<float> texcoords;
-    std::vector<unsigned short> indices;
-    
-    for (const auto& [mesh, transform] : parts) {
-        unsigned short vert_offset = static_cast<unsigned short>(vertices.size() / 3);
-        
-        // Normal transformation matrix (rotation only, translation zeroed out)
-        Matrix rot_only = transform;
-        rot_only.m12 = 0.0f; rot_only.m13 = 0.0f; rot_only.m14 = 0.0f;
-        
-        for (int i = 0; i < mesh.vertexCount; ++i) {
-            Vector3 v = { mesh.vertices[i*3], mesh.vertices[i*3+1], mesh.vertices[i*3+2] };
-            Vector3 vt = Vector3Transform(v, transform);
-            vertices.push_back(vt.x);
-            vertices.push_back(vt.y);
-            vertices.push_back(vt.z);
-            
-            if (mesh.normals) {
-                Vector3 n = { mesh.normals[i*3], mesh.normals[i*3+1], mesh.normals[i*3+2] };
-                Vector3 nt = Vector3Normalize(Vector3Transform(n, rot_only));
-                normals.push_back(nt.x);
-                normals.push_back(nt.y);
-                normals.push_back(nt.z);
-            } else {
-                normals.push_back(0.0f);
-                normals.push_back(1.0f);
-                normals.push_back(0.0f);
-            }
-            
-            if (mesh.texcoords) {
-                texcoords.push_back(mesh.texcoords[i*2]);
-                texcoords.push_back(mesh.texcoords[i*2+1]);
-            } else {
-                texcoords.push_back(0.0f);
-                texcoords.push_back(0.0f);
-            }
-        }
-        
-        if (mesh.indices) {
-            for (int i = 0; i < mesh.triangleCount * 3; ++i) {
-                indices.push_back(static_cast<unsigned short>(vert_offset + mesh.indices[i]));
-            }
-        } else {
-            for (int i = 0; i < mesh.vertexCount; ++i) {
-                indices.push_back(static_cast<unsigned short>(vert_offset + i));
-            }
-        }
-    }
-    
-    Mesh out_mesh{};
-    if (!vertices.empty()) {
-        out_mesh.vertexCount   = static_cast<int>(vertices.size() / 3);
-        out_mesh.triangleCount = static_cast<int>(indices.size()  / 3);
-        out_mesh.vertices  = (float*)MemAlloc((unsigned)(vertices.size()  * sizeof(float)));
-        out_mesh.normals   = (float*)MemAlloc((unsigned)(normals.size()   * sizeof(float)));
-        out_mesh.texcoords = (float*)MemAlloc((unsigned)(texcoords.size() * sizeof(float)));
-        out_mesh.indices   = (unsigned short*)MemAlloc((unsigned)(indices.size() * sizeof(unsigned short)));
-        std::memcpy(out_mesh.vertices,  vertices.data(),  vertices.size()  * sizeof(float));
-        std::memcpy(out_mesh.normals,   normals.data(),   normals.size()   * sizeof(float));
-        std::memcpy(out_mesh.texcoords, texcoords.data(), texcoords.size() * sizeof(float));
-        std::memcpy(out_mesh.indices,   indices.data(),   indices.size()   * sizeof(unsigned short));
-        UploadMesh(&out_mesh, false);
-    }
-    return out_mesh;
+namespace {
+
+// GLSL 330. Vertex colour × material colour × texture; two-sided (the normal is
+// turned toward the viewer); hemisphere ambient + sun + soft specular + rim;
+// distance fog matching the terrain shader.
+const char* kLitVS = R"(#version 330
+in vec3 vertexPosition;
+in vec2 vertexTexCoord;
+in vec3 vertexNormal;
+in vec4 vertexColor;
+uniform mat4 mvp;
+uniform mat4 matModel;
+uniform mat4 matNormal;
+out vec3 fragWorld;
+out vec3 fragNormal;
+out vec2 fragUV;
+out vec4 fragColor;
+void main() {
+    fragWorld  = (matModel * vec4(vertexPosition, 1.0)).xyz;
+    fragNormal = normalize((matNormal * vec4(vertexNormal, 0.0)).xyz);
+    fragUV     = vertexTexCoord;
+    fragColor  = vertexColor;
+    gl_Position = mvp * vec4(vertexPosition, 1.0);
+}
+)";
+
+const char* kLitFS = R"(#version 330
+in vec3 fragWorld;
+in vec3 fragNormal;
+in vec2 fragUV;
+in vec4 fragColor;
+uniform sampler2D texture0;
+uniform vec4 colDiffuse;
+uniform vec3 camPos;
+uniform vec3 sunDir;
+uniform vec4 fogColor;
+uniform vec2 fogRange;
+out vec4 finalColor;
+void main() {
+    vec4 base = texture(texture0, fragUV) * colDiffuse * fragColor;
+    vec3 v = normalize(camPos - fragWorld);
+    vec3 n = normalize(fragNormal);
+    if (dot(n, v) < 0.0) n = -n;
+    float diff = max(dot(n, sunDir), 0.0);
+    float sky  = 0.5 + 0.5 * n.y;
+    vec3 amb   = mix(vec3(0.30, 0.28, 0.25), vec3(0.52, 0.58, 0.66), sky);
+    vec3 h     = normalize(sunDir + v);
+    float spec = pow(max(dot(n, h), 0.0), 32.0) * 0.28;
+    float rim  = pow(1.0 - max(dot(n, v), 0.0), 3.0) * 0.18;
+    vec3 c = base.rgb * (amb + vec3(1.0, 0.97, 0.90) * diff * 0.85) + vec3(spec + rim);
+    float d = length(fragWorld - camPos);
+    float f = clamp((d - fogRange.x) / max(fogRange.y - fogRange.x, 1.0), 0.0, 1.0);
+    finalColor = vec4(mix(c, fogColor.rgb, f), base.a);
+}
+)";
+
+// Largest bounding-box extent of a model, in model units.
+float model_extent(const Model& m) {
+    const BoundingBox bb = GetModelBoundingBox(m);
+    return std::max({ bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z, 0.01f });
 }
 
-// ── Procedural default shapes ─────────────────────────────────────────────────
-//
-//  All composite procedural models are natively aligned so:
-//    - Nose / Front points to -Z (Forward)
-//    - Wings / Width lies along X (Right)
-//    - Top points to +Y (Up)
-//  This allows them to use base_rot = {0,0,0,1} (identity rotation) and
-//  align perfectly with the flight simulation heading/pitch/roll logic!
+} // namespace
+
 void AssetManager::init_procedural() {
-    // TYPE_JET (1) — Detailed high-tech fighter jet, blue-cyan tint
-    {
-        std::vector<std::pair<Mesh, Matrix>> parts;
-        Mesh fuse = GenMeshCylinder(1.2f, 15.0f, 8);
-        parts.push_back({fuse, MatrixMultiply(MatrixRotateX(-M_PI/2.0f), MatrixTranslate(0.0f, 0.0f, 2.5f))});
-        
-        Mesh nose = GenMeshCone(1.2f, 10.0f, 8);
-        parts.push_back({nose, MatrixMultiply(MatrixRotateX(-M_PI/2.0f), MatrixTranslate(0.0f, 0.0f, -10.0f))});
-        
-        Mesh canopy = GenMeshSphere(0.9f, 8, 8);
-        parts.push_back({canopy, MatrixTranslate(0.0f, 1.0f, -3.0f)});
-        
-        Mesh wings = GenMeshCube(16.0f, 0.15f, 5.0f);
-        parts.push_back({wings, MatrixTranslate(0.0f, 0.0f, 2.0f)});
-        
-        Mesh tail_fin = GenMeshCube(0.2f, 4.0f, 3.0f);
-        parts.push_back({tail_fin, MatrixTranslate(0.0f, 2.0f, 8.5f)});
-        
-        Mesh tail_stab = GenMeshCube(6.0f, 0.1f, 2.5f);
-        parts.push_back({tail_stab, MatrixTranslate(0.0f, 0.0f, 8.5f)});
-        
-        procedural_[net::TYPE_JET] = { LoadModelFromMesh(merge_meshes(parts)), { 80, 140, 255, 255 }, 1.0f, {0,0,0,1} };
-        
-        UnloadMesh(fuse);
-        UnloadMesh(nose);
-        UnloadMesh(canopy);
-        UnloadMesh(wings);
-        UnloadMesh(tail_fin);
-        UnloadMesh(tail_stab);
+    if (ready_) return;
+    lit_ = LoadShaderFromMemory(kLitVS, kLitFS);
+    loc_cam_     = GetShaderLocation(lit_, "camPos");
+    loc_sun_     = GetShaderLocation(lit_, "sunDir");
+    loc_fog_col_ = GetShaderLocation(lit_, "fogColor");
+    loc_fog_rng_ = GetShaderLocation(lit_, "fogRange");
+    // Defaults so the shader works without per-frame setup (e.g. in the hangar tool).
+    set_frame_uniforms({ 0, 1000, 0 }, Vector3Normalize({ -0.55f, 0.75f, -0.45f }), { 0, 0, 0, 255 }, 1e9f, 2e9f);
+
+    build_procedural_models(procedural_, fallback_);
+    for (auto& [type, e] : procedural_) {
+        apply_lit(e.model);
+        for (Spinner& sp : e.spinners) apply_lit(sp.model);
     }
-
-    // TYPE_MISSILE (2) — Sleek tactical missile, crimson red tint
-    {
-        std::vector<std::pair<Mesh, Matrix>> parts;
-        Mesh body = GenMeshCylinder(0.35f, 6.0f, 6);
-        parts.push_back({body, MatrixMultiply(MatrixRotateX(-M_PI/2.0f), MatrixTranslate(0.0f, 0.0f, 1.0f))});
-        
-        Mesh nose = GenMeshCone(0.35f, 4.0f, 6);
-        parts.push_back({nose, MatrixMultiply(MatrixRotateX(-M_PI/2.0f), MatrixTranslate(0.0f, 0.0f, -4.0f))});
-        
-        Mesh fin1 = GenMeshCube(0.05f, 2.2f, 0.8f);
-        parts.push_back({fin1, MatrixTranslate(0.0f, 0.0f, 3.5f)});
-        
-        Mesh fin2 = GenMeshCube(2.2f, 0.05f, 0.8f);
-        parts.push_back({fin2, MatrixTranslate(0.0f, 0.0f, 3.5f)});
-        
-        procedural_[net::TYPE_MISSILE] = { LoadModelFromMesh(merge_meshes(parts)), { 255, 60, 60, 255 }, 1.0f, {0,0,0,1} };
-        
-        UnloadMesh(body);
-        UnloadMesh(nose);
-        UnloadMesh(fin1);
-        UnloadMesh(fin2);
-    }
-
-    // TYPE_AAA (3) — Dual-barrel mobile air-defense vehicle, dark forest-green tint
-    {
-        std::vector<std::pair<Mesh, Matrix>> parts;
-        Mesh base = GenMeshCube(7.0f, 2.0f, 9.0f);
-        parts.push_back({base, MatrixTranslate(0.0f, 1.0f, 0.0f)});
-        
-        Mesh turret = GenMeshCylinder(2.5f, 2.0f, 8);
-        parts.push_back({turret, MatrixTranslate(0.0f, 3.0f, 0.0f)});
-        
-        Mesh radar = GenMeshCube(2.5f, 1.2f, 0.8f);
-        parts.push_back({radar, MatrixTranslate(0.0f, 4.0f, 2.0f)});
-        
-        Mesh bar1 = GenMeshCylinder(0.2f, 6.0f, 6);
-        parts.push_back({bar1, MatrixMultiply(MatrixRotateX(-M_PI/2.0f), MatrixTranslate(-1.2f, 3.2f, -3.5f))});
-        
-        Mesh bar2 = GenMeshCylinder(0.2f, 6.0f, 6);
-        parts.push_back({bar2, MatrixMultiply(MatrixRotateX(-M_PI/2.0f), MatrixTranslate(1.2f, 3.2f, -3.5f))});
-        
-        procedural_[net::TYPE_AAA] = { LoadModelFromMesh(merge_meshes(parts)), { 60, 75, 60, 255 }, 1.0f, {0,0,0,1} };
-        
-        UnloadMesh(base);
-        UnloadMesh(turret);
-        UnloadMesh(radar);
-        UnloadMesh(bar1);
-        UnloadMesh(bar2);
-    }
-
-    // TYPE_GROUND (4) — 6x6 Armored Command Vehicle, sand orange-brown tint
-    {
-        std::vector<std::pair<Mesh, Matrix>> parts;
-        Mesh hull = GenMeshCube(6.0f, 2.4f, 10.0f);
-        parts.push_back({hull, MatrixTranslate(0.0f, 1.8f, 0.0f)});
-        
-        Mesh cab = GenMeshCube(5.0f, 1.2f, 6.0f);
-        parts.push_back({cab, MatrixTranslate(0.0f, 3.6f, -1.0f)});
-        
-        Mesh wheel = GenMeshCylinder(1.2f, 0.8f, 8);
-        for (float z : {-3.5f, 0.0f, 3.5f}) {
-            parts.push_back({wheel, MatrixMultiply(MatrixRotateZ(M_PI/2.0f), MatrixTranslate(-3.1f, 0.6f, z))});
-            parts.push_back({wheel, MatrixMultiply(MatrixRotateZ(M_PI/2.0f), MatrixTranslate(3.1f, 0.6f, z))});
-        }
-        
-        procedural_[net::TYPE_GROUND] = { LoadModelFromMesh(merge_meshes(parts)), { 220, 120, 30, 255 }, 1.0f, {0,0,0,1} };
-        
-        UnloadMesh(hull);
-        UnloadMesh(cab);
-        UnloadMesh(wheel);
-    }
-
-    // TYPE_HELO (5) — Tactical combat helicopter, olive green tint
-    {
-        std::vector<std::pair<Mesh, Matrix>> parts;
-        Mesh cabin = GenMeshSphere(2.5f, 8, 8);
-        parts.push_back({cabin, MatrixTranslate(0.0f, 0.0f, -2.0f)});
-        
-        Mesh boom = GenMeshCylinder(0.5f, 8.0f, 6);
-        parts.push_back({boom, MatrixMultiply(MatrixRotateX(-M_PI/2.0f), MatrixTranslate(0.0f, 0.0f, 4.0f))});
-        
-        Mesh shaft = GenMeshCylinder(0.15f, 1.8f, 6);
-        parts.push_back({shaft, MatrixTranslate(0.0f, 2.0f, -2.0f)});
-        
-        Mesh rotor = GenMeshCube(16.0f, 0.05f, 0.8f);
-        parts.push_back({rotor, MatrixTranslate(0.0f, 2.9f, -2.0f)});
-        
-        Mesh tail = GenMeshCylinder(1.2f, 0.1f, 6);
-        parts.push_back({tail, MatrixMultiply(MatrixRotateZ(M_PI/2.0f), MatrixTranslate(0.6f, 1.5f, 8.0f))});
-        
-        procedural_[net::TYPE_HELO] = { LoadModelFromMesh(merge_meshes(parts)), { 60, 200, 80, 255 }, 1.0f, {0,0,0,1} };
-        
-        UnloadMesh(cabin);
-        UnloadMesh(boom);
-        UnloadMesh(shaft);
-        UnloadMesh(rotor);
-        UnloadMesh(tail);
-    }
-
-    // TYPE_SHIP (6) — Guided-missile naval destroyer, deck grey tint
-    {
-        std::vector<std::pair<Mesh, Matrix>> parts;
-        Mesh hull = GenMeshCube(10.0f, 4.0f, 45.0f);
-        parts.push_back({hull, MatrixTranslate(0.0f, 2.0f, 5.0f)});
-        
-        Mesh bow = GenMeshCone(5.0f, 15.0f, 8);
-        parts.push_back({bow, MatrixMultiply(MatrixRotateX(-M_PI/2.0f), MatrixTranslate(0.0f, 2.0f, -25.0f))});
-        
-        Mesh bridge = GenMeshCube(7.0f, 3.0f, 12.0f);
-        parts.push_back({bridge, MatrixTranslate(0.0f, 5.5f, -5.0f)});
-        
-        Mesh mast = GenMeshCylinder(0.4f, 4.0f, 6);
-        parts.push_back({mast, MatrixTranslate(0.0f, 9.0f, -5.0f)});
-        
-        Mesh aft = GenMeshCube(8.0f, 2.5f, 15.0f);
-        parts.push_back({aft, MatrixTranslate(0.0f, 5.25f, 12.0f)});
-        
-        Mesh gun = GenMeshCube(3.0f, 1.5f, 4.0f);
-        parts.push_back({gun, MatrixTranslate(0.0f, 4.75f, -12.0f)});
-        
-        Mesh barrel = GenMeshCylinder(0.15f, 6.0f, 6);
-        parts.push_back({barrel, MatrixMultiply(MatrixRotateX(-M_PI/2.0f), MatrixTranslate(0.0f, 5.2f, -17.0f))});
-        
-        procedural_[net::TYPE_SHIP] = { LoadModelFromMesh(merge_meshes(parts)), { 120, 120, 140, 255 }, 1.0f, {0,0,0,1} };
-        
-        UnloadMesh(hull);
-        UnloadMesh(bow);
-        UnloadMesh(bridge);
-        UnloadMesh(mast);
-        UnloadMesh(aft);
-        UnloadMesh(gun);
-        UnloadMesh(barrel);
-    }
-
-    // Fallback high-tech chevron / generic drone model for unknown/default entities
-    {
-        std::vector<std::pair<Mesh, Matrix>> parts;
-        // Central body cone
-        Mesh body = GenMeshCone(1.0f, 6.0f, 6);
-        parts.push_back({body, MatrixMultiply(MatrixRotateX(-M_PI/2.0f), MatrixTranslate(0.0f, 0.0f, -1.0f))});
-        // Swept-back chevron wings
-        Mesh wings = GenMeshCube(8.0f, 0.2f, 2.5f);
-        parts.push_back({wings, MatrixTranslate(0.0f, 0.0f, 1.0f)});
-        // Small tail stabilizer
-        Mesh tail = GenMeshCube(0.2f, 2.0f, 1.5f);
-        parts.push_back({tail, MatrixTranslate(0.0f, 1.0f, 2.5f)});
-
-        fallback_.model = LoadModelFromMesh(merge_meshes(parts));
-        fallback_.tint  = { 180, 200, 220, 255 }; // High-tech light steel blue
-        fallback_.scale = 1.0f;
-        fallback_.base_rot = {0,0,0,1};
-
-        UnloadMesh(body);
-        UnloadMesh(wings);
-        UnloadMesh(tail);
-    }
+    apply_lit(fallback_.model);
     ready_ = true;
+}
+
+void AssetManager::set_frame_uniforms(Vector3 cam_pos, Vector3 sun_dir, Color fog,
+                                      float fog_start, float fog_end) noexcept {
+    if (lit_.id == 0) return;
+    const float cam[3] = { cam_pos.x, cam_pos.y, cam_pos.z };
+    const float sun[3] = { sun_dir.x, sun_dir.y, sun_dir.z };
+    const float col[4] = { fog.r / 255.0f, fog.g / 255.0f, fog.b / 255.0f, 1.0f };
+    const float rng[2] = { fog_start, fog_end };
+    SetShaderValue(lit_, loc_cam_, cam, SHADER_UNIFORM_VEC3);
+    SetShaderValue(lit_, loc_sun_, sun, SHADER_UNIFORM_VEC3);
+    SetShaderValue(lit_, loc_fog_col_, col, SHADER_UNIFORM_VEC4);
+    SetShaderValue(lit_, loc_fog_rng_, rng, SHADER_UNIFORM_VEC2);
+}
+
+void AssetManager::apply_lit(Model& m) const noexcept {
+    if (lit_.id == 0) return;
+    for (int i = 0; i < m.materialCount; ++i) m.materials[i].shader = lit_;
+}
+
+// The lit shader is shared, so detach it before UnloadModel() (which would
+// otherwise unload it once per material).
+void AssetManager::release(Model& m) const noexcept {
+    if (m.meshCount == 0) return;
+    for (int i = 0; i < m.materialCount; ++i)
+        if (m.materials[i].shader.id == lit_.id && lit_.id != 0) {
+            m.materials[i].shader.id   = rlGetShaderIdDefault();
+            m.materials[i].shader.locs = rlGetShaderLocsDefault();
+        }
+    UnloadModel(m);
+    m = Model{};
+}
+
+void AssetManager::release(ModelEntry& e) const noexcept {
+    release(e.model);
+    for (Spinner& sp : e.spinners) release(sp.model);
+    e.spinners.clear();
 }
 
 AssetManager::AssetManager()  {}
@@ -287,11 +145,12 @@ AssetManager::AssetManager()  {}
 AssetManager::~AssetManager() { stop_worker(); unload_all(); }
 
 void AssetManager::unload_all() noexcept {
-    for (auto& [k, e] : named_)      UnloadModel(e.model);
-    for (auto& [k, e] : procedural_) UnloadModel(e.model);
-    if (ready_) UnloadModel(fallback_.model);
+    for (auto& [k, e] : named_)      release(e);
+    for (auto& [k, e] : procedural_) release(e);
+    if (ready_) release(fallback_);
     named_.clear();
     procedural_.clear();
+    if (lit_.id != 0) { UnloadShader(lit_); lit_ = Shader{}; }
     ready_ = false;
 }
 
@@ -321,12 +180,23 @@ void AssetManager::request_load(const std::string& name,
                                 uint16_t type, float import_scale,
                                 Color tint, Quaternion base_rot) noexcept
 {
-    if (named_.contains(name)) { map_type(type, name); return; }
+    // One entry per file *and* settings: loading a file again with a different
+    // scale / tint / rotation must not silently reuse the old entry.
+    char params[160];
+    std::snprintf(params, sizeof(params), "|%g|%u,%u,%u|%g,%g,%g,%g", import_scale, tint.r, tint.g, tint.b,
+                  base_rot.x, base_rot.y, base_rot.z, base_rot.w);
+    const std::string key = name + params;
+    if (named_.contains(key)) {
+        map_type(type, key);
+        repoint_pending_.push_back(type);   // existing tracks pick it up next pump
+        return;
+    }
+    const std::string& job_name = key;
     if (!worker_run_.exchange(true))
         worker_ = std::thread(&AssetManager::worker_loop, this);
     {
         std::lock_guard lk(jobs_mu_);
-        jobs_.push_back({name, path, type, import_scale, tint, base_rot});
+        jobs_.push_back({job_name, path, type, import_scale, tint, base_rot});
     }
     inflight_.fetch_add(1);
     jobs_cv_.notify_one();
@@ -352,14 +222,15 @@ void AssetManager::worker_loop() {
 }
 
 std::vector<uint16_t> AssetManager::pump_uploads(int budget) noexcept {
-    std::vector<uint16_t> updated;
+    std::vector<uint16_t> updated = std::move(repoint_pending_);
+    repoint_pending_.clear();
     for (int i = 0; i < budget; ++i) {
         ReadyModel rm;
         {
             std::lock_guard lk(ready_mu_);
             if (ready_models_.empty()) break;
-            rm = std::move(ready_models_.back());
-            ready_models_.pop_back();
+            rm = std::move(ready_models_.front());          // in request order
+            ready_models_.erase(ready_models_.begin());
         }
         inflight_.fetch_sub(1);
         if (!rm.ok) {
@@ -367,9 +238,15 @@ std::vector<uint16_t> AssetManager::pump_uploads(int budget) noexcept {
                      rm.job.path.string().c_str());
             continue;
         }
+        if (named_.contains(rm.job.name)) {
+            // The same file+settings was requested twice before the first finished.
+            map_type(rm.job.type, rm.job.name);
+            updated.push_back(rm.job.type);
+            continue;
+        }
         ModelEntry e;
         if (upload_cpu(rm.cpu, rm.job.scale, rm.job.tint, rm.job.base_rot, e)) {
-            named_[rm.job.name] = std::move(e);   // GPU upload on the main thread
+            named_.emplace(rm.job.name, std::move(e));   // GPU upload on the main thread
             map_type(rm.job.type, rm.job.name);
             updated.push_back(rm.job.type);
             TraceLog(LOG_INFO, "AssetManager: model ready for type %u ('%s')",
@@ -406,10 +283,14 @@ bool AssetManager::parse_file(const std::filesystem::path& path, CpuMesh& out) n
 {
     Assimp::Importer importer;
     importer.SetPropertyFloat(AI_CONFIG_GLOBAL_SCALE_FACTOR_KEY, 1.0f);
+    importer.SetPropertyInteger(AI_CONFIG_PP_SLM_VERTEX_LIMIT, 65535);
 
+    // PreTransformVertices bakes the node hierarchy (parts placed by their node
+    // transforms); SplitLargeMeshes keeps every mesh within 16-bit indices.
     const aiScene* scene = importer.ReadFile(path.string(),
         aiProcess_Triangulate | aiProcess_GenSmoothNormals |
-        aiProcess_JoinIdenticalVertices | aiProcess_OptimizeMeshes |
+        aiProcess_JoinIdenticalVertices | aiProcess_PreTransformVertices |
+        aiProcess_SplitLargeMeshes | aiProcess_OptimizeMeshes |
         aiProcess_FlipUVs | aiProcess_GlobalScale);
 
     if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode) {
@@ -418,59 +299,87 @@ bool AssetManager::parse_file(const std::filesystem::path& path, CpuMesh& out) n
         return false;
     }
 
-    unsigned short vert_offset = 0;
+    // Pack the meshes into parts of at most 65535 vertices.
+    constexpr uint32_t kMaxVerts = 65535;
     for (uint32_t mi = 0; mi < scene->mNumMeshes; ++mi) {
         const aiMesh* m = scene->mMeshes[mi];
         if (!m->HasPositions()) continue;
+        if (m->mNumVertices > kMaxVerts) {
+            TraceLog(LOG_WARNING, "AssetManager: '%s': skipping a mesh with %u vertices",
+                     path.filename().string().c_str(), m->mNumVertices);
+            continue;
+        }
+        if (out.parts.empty() || out.parts.back().vertices.size() / 3 + m->mNumVertices > kMaxVerts)
+            out.parts.emplace_back();
+        CpuMesh::Part& part = out.parts.back();
+        const auto vert_offset = static_cast<uint32_t>(part.vertices.size() / 3);
 
         for (uint32_t vi = 0; vi < m->mNumVertices; ++vi) {
-            out.vertices.push_back(m->mVertices[vi].x);
-            out.vertices.push_back(m->mVertices[vi].y);
-            out.vertices.push_back(m->mVertices[vi].z);
+            part.vertices.push_back(m->mVertices[vi].x);
+            part.vertices.push_back(m->mVertices[vi].y);
+            part.vertices.push_back(m->mVertices[vi].z);
             if (m->HasNormals()) {
-                out.normals.push_back(m->mNormals[vi].x);
-                out.normals.push_back(m->mNormals[vi].y);
-                out.normals.push_back(m->mNormals[vi].z);
-            } else { out.normals.push_back(0); out.normals.push_back(1); out.normals.push_back(0); }
+                part.normals.push_back(m->mNormals[vi].x);
+                part.normals.push_back(m->mNormals[vi].y);
+                part.normals.push_back(m->mNormals[vi].z);
+            } else { part.normals.push_back(0); part.normals.push_back(1); part.normals.push_back(0); }
             if (m->HasTextureCoords(0)) {
-                out.texcoords.push_back(m->mTextureCoords[0][vi].x);
-                out.texcoords.push_back(m->mTextureCoords[0][vi].y);
-            } else { out.texcoords.push_back(0); out.texcoords.push_back(0); }
+                part.texcoords.push_back(m->mTextureCoords[0][vi].x);
+                part.texcoords.push_back(m->mTextureCoords[0][vi].y);
+            } else { part.texcoords.push_back(0); part.texcoords.push_back(0); }
         }
         for (uint32_t fi = 0; fi < m->mNumFaces; ++fi) {
             const aiFace& f = m->mFaces[fi];
             if (f.mNumIndices != 3) continue;
-            out.indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[0]));
-            out.indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[1]));
-            out.indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[2]));
+            part.indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[0]));
+            part.indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[1]));
+            part.indices.push_back(static_cast<unsigned short>(vert_offset + f.mIndices[2]));
         }
-        vert_offset += static_cast<unsigned short>(m->mNumVertices);
     }
-    return !out.vertices.empty();
+    while (!out.parts.empty() && out.parts.back().vertices.empty()) out.parts.pop_back();
+    return !out.parts.empty();
 }
 
 // GPU upload of a parsed CpuMesh — MAIN THREAD ONLY (raylib GL calls).
 bool AssetManager::upload_cpu(const CpuMesh& cpu, float scale, Color tint,
                               Quaternion base_rot, ModelEntry& out) noexcept
 {
-    if (cpu.vertices.empty()) return false;
-    Mesh mesh{};
-    mesh.vertexCount   = static_cast<int>(cpu.vertices.size() / 3);
-    mesh.triangleCount = static_cast<int>(cpu.indices.size()  / 3);
-    mesh.vertices  = (float*)MemAlloc((unsigned)(cpu.vertices.size()  * sizeof(float)));
-    mesh.normals   = (float*)MemAlloc((unsigned)(cpu.normals.size()   * sizeof(float)));
-    mesh.texcoords = (float*)MemAlloc((unsigned)(cpu.texcoords.size() * sizeof(float)));
-    mesh.indices   = (unsigned short*)MemAlloc((unsigned)(cpu.indices.size() * sizeof(unsigned short)));
-    std::memcpy(mesh.vertices,  cpu.vertices.data(),  cpu.vertices.size()  * sizeof(float));
-    std::memcpy(mesh.normals,   cpu.normals.data(),   cpu.normals.size()   * sizeof(float));
-    std::memcpy(mesh.texcoords, cpu.texcoords.data(), cpu.texcoords.size() * sizeof(float));
-    std::memcpy(mesh.indices,   cpu.indices.data(),   cpu.indices.size()   * sizeof(unsigned short));
-    UploadMesh(&mesh, false);
+    if (cpu.parts.empty()) return false;
+    // One raylib mesh per part, all sharing one material (what
+    // LoadModelFromMesh does for a single mesh).
+    const int n = static_cast<int>(cpu.parts.size());
+    Model model{};
+    model.transform     = MatrixIdentity();
+    model.meshCount     = n;
+    model.meshes        = static_cast<Mesh*>(MemAlloc(static_cast<unsigned>(n * sizeof(Mesh))));
+    model.materialCount = 1;
+    model.materials     = static_cast<Material*>(MemAlloc(sizeof(Material)));
+    model.materials[0]  = LoadMaterialDefault();
+    model.meshMaterial  = static_cast<int*>(MemAlloc(static_cast<unsigned>(n * sizeof(int))));
+    for (int i = 0; i < n; ++i) {
+        const CpuMesh::Part& p = cpu.parts[static_cast<size_t>(i)];
+        Mesh mesh{};
+        mesh.vertexCount   = static_cast<int>(p.vertices.size() / 3);
+        mesh.triangleCount = static_cast<int>(p.indices.size()  / 3);
+        mesh.vertices  = (float*)MemAlloc((unsigned)(p.vertices.size()  * sizeof(float)));
+        mesh.normals   = (float*)MemAlloc((unsigned)(p.normals.size()   * sizeof(float)));
+        mesh.texcoords = (float*)MemAlloc((unsigned)(p.texcoords.size() * sizeof(float)));
+        mesh.indices   = (unsigned short*)MemAlloc((unsigned)(p.indices.size() * sizeof(unsigned short)));
+        std::memcpy(mesh.vertices,  p.vertices.data(),  p.vertices.size()  * sizeof(float));
+        std::memcpy(mesh.normals,   p.normals.data(),   p.normals.size()   * sizeof(float));
+        std::memcpy(mesh.texcoords, p.texcoords.data(), p.texcoords.size() * sizeof(float));
+        std::memcpy(mesh.indices,   p.indices.data(),   p.indices.size()   * sizeof(unsigned short));
+        UploadMesh(&mesh, false);
+        model.meshes[i] = mesh;
+        model.meshMaterial[i] = 0;
+    }
 
-    out.model    = LoadModelFromMesh(mesh);
+    out.model    = model;
     out.tint     = tint;
     out.scale    = scale;
     out.base_rot = base_rot;
+    out.length   = model_extent(out.model) * scale;
+    apply_lit(out.model);
     return true;
 }
 
@@ -482,8 +391,10 @@ bool AssetManager::convert_assimp(const std::filesystem::path& path,
     CpuMesh cpu;
     if (!parse_file(path, cpu)) return false;
     if (!upload_cpu(cpu, import_scale, tint, base_rot, out)) return false;
-    TraceLog(LOG_INFO, "AssetManager: loaded '%s' (%d verts)",
-             path.filename().string().c_str(), out.model.meshCount ? out.model.meshes[0].vertexCount : 0);
+    int verts = 0;
+    for (int i = 0; i < out.model.meshCount; ++i) verts += out.model.meshes[i].vertexCount;
+    TraceLog(LOG_INFO, "AssetManager: loaded '%s' (%d verts, %d meshes)",
+             path.filename().string().c_str(), verts, out.model.meshCount);
     return true;
 }
 
